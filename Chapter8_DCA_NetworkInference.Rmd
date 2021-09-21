@@ -1,0 +1,1223 @@
+---
+title: "Networks after Imputation"
+author: "Lisa"
+date: "March 16, 2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Aim
+
+With this analysis we try to answer the following questions; <br>
+* Can we reach a sft model fit after data imputation? <br>
+* How *good* do the dendrograms look?
+* How similiar are the networks?
+
+# Set-up
+
+## Directories
+
+```{r}
+dir_name <- "/data/bioinf/projects/data/2021_NetworksRetina/"
+input <- paste0(dir_name, "input/")
+rdata <- paste0(dir_name, "RData/")
+results <- paste0(dir_name, "results/")
+
+```
+
+## Packages
+
+```{r}
+library("WGCNA")
+library("Seurat")
+library("ggplot2")
+library("forcats")
+library("tidyverse")
+library(biomaRt)
+library("jaccard")
+library(reshape2)
+library(magrittr)
+```
+
+## Functions
+
+```{r}
+filterData <- function(data){
+  multExpr <- data
+  # WGCNA use dataframes with samples in rows and genes/probes in columns
+  
+  # Filtering of NA-Entries in Genes and Samples
+  k <- WGCNA::goodSamplesGenes(multExpr, minFraction = 0.1)
+  k$allOK # if TRUE the next command will nothing change, else genes and/or samples will be deleted
+  multExpr <- multExpr[which(k$goodSamples),which(k$goodGenes)]
+  
+  #print(dim(multExpr)) 
+}
+
+FindBetaAndPlot <- function(data, powers, data_set_name= NULL){
+  
+  sft <- WGCNA::pickSoftThreshold(data, powerVector = powers, verbose = 5, networkType = "signed")
+  
+  # Also plot it in md
+  par(mfrow=c(1,2))
+  plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+       ylim = c(0,1), xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",
+       type="n",main = '')
+  abline( h = 0.8, col = "red")
+  text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2], labels=powers,cex=1.0,col=ifelse(-sign(sft$fitIndices[,3])*sft$fitIndices[,2] < 0.8,'grey','black'))
+  plot(sft$fitIndices[,1], sft$fitIndices[,6], xlab="Soft Threshold (power)",ylab="Median Connectivity", type="n", main = '')
+  # abline( h = 100, col = "red")
+  text(sft$fitIndices[,1], sft$fitIndices[,6], labels=powers, cex=1.0,col='black')
+}
+
+build_tree <- function( multiExpr, beta, data_type, minClusterSize){
+  
+  adjacency <- WGCNA::adjacency(multiExpr, type = "signed" , power = beta, corFnc = "bicor")
+  TOM <- WGCNA::TOMsimilarity(adjacency);
+  save(TOM, file = paste0(rdata,"02_TOM_", data_type,".RData"))
+  dissTOM = 1-TOM
+  geneTree <<- hclust(as.dist(dissTOM),method="average");
+  dynamicMods = cutreeDynamic(dendro = geneTree, distM = dissTOM, 
+                              method="hybrid", deepSplit = 2, 
+                              pamRespectsDendro = FALSE, minClusterSize = minClusterSize);
+  dynamicColors <<- labels2colors(dynamicMods)
+  plotDendroAndColors(geneTree, dynamicColors, "Dynamic Tree Cut", 
+                      dendroLabels = FALSE, hang = 0.03, addGuide = TRUE, 
+                      guideHang = 0.05)
+  save(dynamicColors, file = paste0(rdata,"02_dynamicColors_", data_type,".RData"))
+  rm(TOM, dissTOM)
+  
+}
+
+Plot_module_hist <- function(module_vector, imputation_type, data_name){
+  # svg(paste0(results,"R_01_HistModules_",imputation_type, "_", data_name,".svg"))
+  p <- ggplot(as.data.frame(module_vector), aes(x=fct_infreq(module_vector))) + 
+    geom_histogram(stat = 'count',fill =(values=c(levels(fct_infreq(module_vector))))) +
+    theme_bw() +
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+    xlab("Module Colors")+
+    labs(title = "Histogramm of Module sizes", subtitle = paste(imputation_type, "Imputation,", data_name)) +
+    theme(axis.text.x = element_text(angle = 60, hjust = 1, vjust = 1))
+  print(p)
+  # dev.off()
+  # print(p)
+}
+
+Seurat_Object <- function(count_data, data_type){
+  seurat_obj <- CreateSeuratObject(counts = count_data, project = "KIM", min.cells = 67, min.features = 600)
+  seurat_obj <- NormalizeData(seurat_obj, normalization.method = "LogNormalize", scale.factor = 10000)
+  
+  seurat_obj <- FindVariableFeatures(seurat_obj, selection.method = "vst", nfeatures = 1000)
+  
+  all.genes <- rownames(seurat_obj)
+  # Have to scale here (again?) --> otherwise no PCA
+  seurat_obj <- ScaleData(seurat_obj, features = all.genes)
+  
+  seurat_obj <- RunPCA(seurat_obj, features = VariableFeatures(object = seurat_obj))
+  DimPlot(seurat_obj, reduction = "pca")
+  seurat_obj <- FindNeighbors(seurat_obj)
+  # pbmc <- FindNeighbors(pbmc, dims = 1:10)
+  
+  seurat_obj <- FindClusters(seurat_obj)
+  
+  seurat_obj <- RunTSNE(seurat_obj,dims.use = 1:10)
+  
+  DimPlot(seurat_obj, reduction = "tsne", group.by = "RNA_snn_res.0.8")
+  
+  marker_genes <<- c('GUCA1A','ARR3','GUCA1C','PDE6H','GNAT2','GUCA1B','GUK1','MYL4','GNB3','CNGB3','LBH','GNGT2','CC2D2A','MAP6','HRASLS','PEX5L','LMOD1','PLA2G5','XRCC4','TTR','NRL', 'RHO','ROM1','GNGT1','PDE6G','GNB1','SAG','GNAT1','CABP5','SPTBN1','NR2E3','CADM1','PDE6A','PEEP6','CNGB1','CLUL1','RASSF2','GABRR3','CCKBR','RHO','DDC','SLC24A1','CLU','SPP1','WIF1','DKK3','C1orf61','FRZB','VIM','CRYAB','CRYM','RLBP1','PTN','PRSS35','IFITM3','SAT1','GPX3','DBI','TF','IFITM2','IFITM1','CCL2','ISL1','MALAT1','TAGLN3','Ca10','STMN2','PTPRD','GUCY1A3','NRXN3','CCDC88A','SOX4','TMSB10','GRIA4','SERPINI1','CPLX3','NEAT1','ARID5B','ZEB2','CELF4','RTN1','NEROD4')
+  
+  # Plot dotplot from intersect between SC data and marker_genes
+  # Genes printed in reverse order
+  # In plot: Mixed cells, MG, Rods, Cones
+  # DotPlot(seurat_obj, features = unique(marker_genes[marker_genes %in% rownames(seurat_obj)]), group.by = "RNA_snn_res.0.8")
+  saveRDS(seurat_obj, file = paste0(rdata,"01_SeuratData_",data_type,".rds"))
+  return(seurat_obj)
+}
+
+Subset_Seurat <- function(seurat_object, cell_type, data_type = NULL, save_counts = FALSE){
+  seurat.subset <- subset(x = seurat_object, subset = (Annotation == cell_type))
+  if (save_counts == TRUE) {
+    counts <- seurat.subset@assays$RNA@counts
+    write.csv(counts, file = paste0(rdata,"00_Counts_", data_type, "_", cell_type,".csv"))
+  }
+  subset <- seurat.subset@assays[["RNA"]]@scale.data
+  return(subset)
+}
+
+Calculate_Intersect_Cells <- function(cell_type){
+  cond_dca <- rownames(subset(x = ret_dca, subset = (Annotation == cell_type))@meta.data)
+  cond_sparse <- rownames(subset(x = ret_sparse, subset = (Annotation == cell_type))@meta.data) 
+  calc_intersect <- intersect(cond_dca, cond_sparse)
+  print(paste('From', length(cond_sparse), 'cells annotated as', cell_type, 'in the sparse data, and', length(cond_dca), 'cells after DCA imputation,', length(calc_intersect), 'are the same!'))
+}
+
+check_preservation= function(multiExpr, multiColor, nPerm){
+  mp <<- modulePreservation(multiExpr, multiColor, referenceNetworks = 1, nPermutations = nPerm, 
+                            randomSeed = 1, dataIsExpr =T,
+                            maxModuleSize = 5000,
+                            quickCor = 0,
+                            verbose = 3)
+  
+  ref = 1
+  test = 2
+  statsObs = cbind(mp$quality$observed[[ref]][[test]][, -1], mp$preservation$observed[[ref]][[test]][, -1])
+  statsZ = cbind(mp$quality$Z[[ref]][[test]][, -1], mp$preservation$Z[[ref]][[test]][, -1]);
+  # Module labels and module sizes are also contained in the results
+  modColors <<- rownames(mp$preservation$observed[[ref]][[test]])
+  moduleSizes <<- mp$preservation$Z[[1]][[test]][, 1];
+  # leave grey and gold modules out
+  plotMods = !(modColors %in%  "gold");
+  # Text labels for points
+  text = modColors[plotMods];
+  # Auxiliary convenience variable
+  plotData <<- cbind(mp$preservation$observed[[ref]][[test]][, 2], mp$preservation$Z[[ref]][[test]][, 2])
+  # Main titles for the plot
+  mains = c("Preservation Median rank", "Preservation Zsummary");
+  #sizeGrWindow(10, 5);
+  par(mfrow = c(1,2))
+  par(mar = c(4.5,4.5,2.5,1))
+  for (p in 1:2)
+  {
+    min = min(plotData[, p], na.rm = TRUE);
+    max = max(plotData[, p], na.rm = TRUE);
+    # Adjust ploting ranges appropriately
+    if (p==2)
+    {
+      if (min > -max/10) min = -max/10
+      ylim = c(min - 0.1 * (max-min), max + 0.1 * (max-min))
+    } else
+      ylim = c(max + 0.1 * (max-min), min - 0.1 * (max-min))
+    plot(moduleSizes[plotMods], plotData[plotMods, p], col = 1, bg = modColors[plotMods], pch = 21,
+         main = mains[p],
+         cex = 2.4,
+         ylab = mains[p], xlab = "Module size", log = "x",
+         ylim = c(-1,100),
+         xlim = c(10, max(moduleSizes[plotMods])), cex.lab = 1.2, cex.axis = 1.2, cex.main =1.4)
+    text(moduleSizes[plotMods], plotData[plotMods, p], text, cex = 0.5, offs = 0.08);
+    # For Zsummary, add threshold lines
+    if (p==2)
+    {
+      abline(h=0)
+      abline(h=2, col = "blue", lty = 2)
+      abline(h=10, col = "darkgreen", lty = 2)
+    }
+  }
+}
+
+# mg_mk <- read.csv('/work/steinheu/MG_summary_final.csv', header= FALSE)
+
+Goi_list <- list(
+  cones_goi = c('GUCA1A','ARR3','GUCA1C','PDE6H','GNAT2','GUCA1B','GUK1','MYL4','GNB3','CNGB3','LBH','GNGT2','CC2D2A','MAP6','HRASLS','PEX5L','LMOD1','PLA2G5','XRCC4','TTR') ,
+  
+  rods_goi = c('ROM1','GNGT1','PDE6G','GNB1','SAG','GNAT1','CABP5','SPTBN1','NR2E3','CADM1','PDE6A','PEEP6','CNGB1','CLUL1','RASSF2','GABRR3','CCKBR','DDC','SLC24A1', 'NRL'),
+  
+  mg_goi = c('CLU','SPP1','WIF1','DKK3','C1orf61','FRZB','VIM','CRYAB','CRYM','RLBP1','PTN','PRSS35','IFITM3','SAT1','GPX3','DBI','TF','IFITM2','IFITM1','CCL2'))
+
+
+build_goi_df <- function(dynamicColors, data){
+  modules <- as.data.frame(dynamicColors)
+  modules$genes <- rownames(data)
+  rownames(modules) <- modules$genes
+  modules$CellType <- ifelse(modules$genes %in% Goi_list$rods_goi == TRUE, "Rods_GOI", 
+                             ifelse(modules$genes %in% Goi_list$cones_goi == TRUE, "Cones_GOI",
+                                    ifelse(modules$genes %in% Goi_list$mg_goi == TRUE, "MG_GOI", "none")))
+  # modules$In_cones <- ifelse(modules$genes %in% cones_goi == TRUE, "Yes", "No")
+  # modules$In_mg <- ifelse(modules$genes %in% mg_goi == TRUE, "Yes", "No")
+  return(modules)
+}
+
+
+get_top_hubs <- function(datKME_df, n_hubs){
+  hub_genes <- list()
+  for (i in 1:dim(datKME_df)[2]){
+    hub_genes[[i]] <- datKME_df %>% 
+      rownames_to_column() %>% 
+      arrange(desc(datKME_df[,i])) %>%
+      dplyr::select(rowname) %>% 
+      dplyr::slice(1:n_hubs)
+    hub_genes[[i]] <- hub_genes[[i]]$rowname}
+  names(hub_genes) <- gsub(colnames(datKME_df), pattern = "MM.", replacement = "")
+  return(hub_genes)
+}
+
+
+Plot_ranks_GOIs <- function(data_KME, source_ntwk, goi_or_devel = "GOI"){
+  
+  # Define GOI names for plot description
+  Goi_names <- c("Cone", "Rod", "MG")
+  
+  # Generate the df with ranked entries
+  # using absolute numbers because datKME is signed
+  # reverser oder because close to one --> highest ranked
+  ranked_MM_df <- apply(-abs(data_KME), 2, rank)
+  
+  if (goi_or_devel == "GOI"){
+    # For loop over different GOI sets
+    for ( i in 1:3){
+      # Subset ranked_df by respective GOI genes
+      subset_gois <- ranked_MM_df[rownames(ranked_MM_df) %in% Goi_list[[i]],]
+      
+      # Rearrange to ggplot-friendly df
+      subset_df <- melt(subset_gois)
+      colnames(subset_df) <- c("Gene", "Module", "Rank")
+      subset_df$Module <- gsub(subset_df$Module, pattern = "MM.", replacement = "")
+      
+      # Create ggplot boxplot with GOI ranks
+      p <-ggplot(subset_df, aes(x = Module, y = Rank)) +
+        geom_boxplot(fill = as.factor(gsub(pattern = "MM.", replacement = "", colnames(ranked_MM_df)))) +
+        # theme removing background
+        theme(text = element_text(size=15)) +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) +
+        theme(panel.background = element_blank(),
+              axis.line = element_line(colour = "grey50")) 
+      # Plot labeling
+      # labs(title = paste("Distribution of ",Goi_names[i], "-GOI ranks in",source_ntwk ,"Network"), 
+      #      caption = paste(dim(subset_gois)[1], "GOIs"))
+      # Save as svg file with adjustable width depending on n off modules
+      ggsave( file = paste0(results,"R_03_Boxplot_Ranked_",source_ntwk,"_NTWK_",Goi_names[i],"_GOIs.pdf"), 
+              width = 0.75 * dim(ranked_MM_df)[2], 
+              height= 4,
+              plot = p, 
+              device = "pdf", 
+              limitsize = FALSE)}
+    
+  } 
+  if (goi_or_devel == "Devel") {
+    for ( i in 1:2){
+      devel_names <- c("Rods", "Cones")
+      # Subset ranked_df by respective GOI genes
+      subset_gois <- ranked_MM_df[rownames(ranked_MM_df) %in% GO_term_retinal_dev[[i]],]
+      
+      # Rearrange to ggplot-friendly df
+      subset_df <- melt(subset_gois)
+      colnames(subset_df) <- c("Gene", "Module", "Rank")
+      
+      # Create ggplot boxplot with GOI ranks
+      p <-ggplot(subset_df, aes(x = Module, y = Rank)) +
+        geom_boxplot(fill = as.factor(gsub(pattern = "MM.", replacement = "", colnames(ranked_MM_df)))) +
+        # theme removing background
+        theme(text = element_text(size=15)) +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) +
+        theme(panel.background = element_blank(),
+              axis.line = element_line(colour = "grey50")) +
+        # Plot labeling
+        # labs(title = paste("Distribution of ",devel_names[i], "-Development GO terms \n ranks in",source_ntwk ,"Network"), 
+        # caption = paste(dim(subset_gois)[1], "GOIs"))
+        # Save as svg file with adjustable width depending on n off modules
+        ggsave( file = paste0(results,"R_03_Boxplot_Ranked_",source_ntwk,"_NTWK_",devel_names[i],"_Devel_GO.pdf"), 
+                width = 0.75 * dim(ranked_MM_df)[2], 
+                height= 7,
+                plot = p, 
+                device = "pdf", 
+                limitsize = FALSE)}
+  }
+  # return(p)
+}
+
+
+
+#' Export the subnetwork densely connected to a particular node to Cytoscape
+#' 
+#' This function selects a set of nodes based on connecivity to a given node and produced export objects for Cytoscape.  
+#' 
+#' requires nothing so far 
+#' 
+#'   
+#' @param IDs vector of IDs/gene names matching the rows and columns of the adjacency matrix
+#' @param adjacency adjancency matrix
+#' @param target ID of the target node
+#' @param adj.CO adjacency cutoff
+#' @param t.module target module, only nodes within this moule are considered if set
+#' @param modules assigned modules to nodes mandatory of t.module is set
+#' @param annot annotation data frame that genes in rows annotations in columns
+#' @param annot.in.node.t column names of annot columns that should end up in the Cytoscape node table file
+#' @param annot.in.edge.t column names of annot columns that should end up in the Cytoscape edge table file
+#' @param annot.id.match.col column name of annot column to be used for annotation matching, defalts to 'gene_id'
+#' @param base.name file  base name for edge and node table files
+#' @param primary.name.col column used populating the name column if this is NA nodeName is used
+#' @param kME Matrix of Eigengene correlations for all genes rownames need to correspond to IDs, colnames to modules. If set includes Eigenegenes with abs kME > edj.CO 
+#' @param exon.count.CO cutoff from max exons gene, if provided nodes with less exons are discarded
+#' @param ignore.exon.xount.protein.coding ignore exon count cutoff for protein coding genes requires annot to contain a column gene_biotype
+#' @param edge.weight.transform.exp exponent for transforming edge weight, sign is maintained 
+#' @param pos.adj.only only report interactions where the adjacency >= adj.CO, if false abs (adjacency) > = adj.CO nodes and edges are returned, useful when adjacency is actually a signed measure like correlation 
+#' @examples 
+#' subNet2Cytoscape (target='segemehl_XLOC_068379',t.module='thistle', IDs=colnames (datExpr),adjacency=adjacency,
+#' adj.CO=0.7, modules=mergedColors, annot=annot, annot.in.node.t=c('gene_biotype','max_exons_gene', 'AID'), 
+#' annot.in.col.t=c(), annot.id.match.col='gene_id', primary.name.col='hgnc_symbol', kME=kmE.signed
+#' base.name='WGCNA-08b-XLOC_089379')
+#' 
+#' 
+subNet2Cytoscape  <- function (target,t.module=NULL, IDs,adjacency,adj.CO, exon.count.CO=NULL, modules, annot, annot.in.node.t, annot.in.col.t, 
+                               annot.id.match.col='gene_id', primary.name.col='hgnc_symbol', base.name, kME=NULL, ignore.exon.count.protein.coding=F,
+                               edge.weight.transform.exp=5, pos.adj.only=T, debug=0, fixed_n = 0) {
+  if (!is.null (t.module) && is.null (modules)) {
+    stop ('Modules must not be NULL if t.module is given')
+  }
+  
+  target.idx <- match (target, IDs)
+  
+  ## Selection based on adj.CO
+  if (fixed_n != 0){
+    diag(adjacency) <- NA
+    sel.node <- adjacency [target.idx, ]
+    sel.node<- sort(sel.node, decreasing = T)[1:fixed_n]
+    # sel.node <- as.logical(sel.node, target.idx)
+    sel.node.idx <-as.logical(rownames(adjacency) %in% names(sel.node)+ rownames(adjacency) %in% target)
+  } else {
+    if (pos.adj.only==T) {
+      sel.node.idx <- adjacency [target.idx, ]>= adj.CO
+    }
+    else {
+      sel.node.idx <- abs(adjacency [target.idx, ]) >= adj.CO   
+    }}
+  
+  ## Selection based on module memebership
+  if (!is.null (t.module)) {
+    sel.node.idx <- sel.node.idx & modules %in% c(t.module)
+  }
+  
+  ## Selection based on exon count
+  if (!is.null (exon.count.CO)) {
+    if (is.null (annot) | ! 'max_exons_gene' %in% colnames (annot)) {
+      stop('If exon.count.CO is set, annot must be provided and contain a max_exons_gene column!')
+    }
+    if (ignore.exon.count.protein.coding==T) {
+      if ('gene_biotype' %in% colnames (annot)) {
+        sel.node.idx <- sel.node.idx & (annot[match (IDs, annot[,annot.id.match.col]),'max_exons_gene'] > exon.count.CO | 
+                                          annot[match (IDs, annot[,annot.id.match.col]),'gene_biotype']=='protein_coding')
+      }
+      else {
+        stop ('annot needs to contain a column gene_biotype to ignore exon count cutoff for protein coding genes!')
+      }
+    }
+    else {
+      sel.node.idx <- sel.node.idx & annot[match (IDs, annot[,annot.id.match.col]),'max_exons_gene'] > exon.count.CO
+    }
+  }
+  
+  sel.node.idx <- which (sel.node.idx)
+  
+  node.table=data.frame (nodeName=IDs[sel.node.idx])
+  ## columns to add to node table
+  if (!is.null (annot.in.node.t)) {
+    cols <- match (annot.in.node.t, colnames (annot))
+    if (length (which (is.na(cols))) > 0) {
+      stop (paste ('annot.in.node.t argument(s) ', which (is.na(cols)), ' do not match colnames in annot table!', sep="", collapse="," ))
+    }
+    #cols <- which (cols)
+  }
+  if (!is.null (annot)) {
+    if (length (which (is.na(match (annot.id.match.col, colnames (annot))))) > 0) {
+      stop (paste ('annot.id.match.col=', annot.id.match.col, ' does not match any column name in annot!', sep=''))
+    }
+    node.table  <- cbind (node.table, annot [match (node.table$nodeName, annot[,annot.id.match.col]), cols])
+  }
+  ## Generate a name column that contains either the symbol 
+  if (debug > 0) message ('Constructing node table')
+  node.table$pname  <- annot [match (node.table$nodeName, annot[,annot.id.match.col]),primary.name.col]
+  node.table$pname[is.na(node.table$pname) | is.null (node.table$pname) | node.table$pname==""] <- 
+    node.table$nodeName[is.na(node.table$pname) | is.null (node.table$pname) | node.table$pname==""]
+  ## Add moduel informatoin if available
+  if (!is.null(modules)) {
+    node.table$module <- modules[sel.node.idx]
+  }
+  ## Add a column type to discriminate genes from modules 
+  node.table$type='gene'
+  
+  ## Make some corrections to NA entries in tables
+  if ('gene_biotype' %in% colnames (node.table)) {
+    node.table$gene_biotype [is.na(node.table$gene_biotype)]  <- 'XLOC'
+  }
+  
+  ## if kME is provided, add eigengene correlation for the selected nodes 
+  if (! is.null (kME)) {
+    tmp.table  <- matrix (nrow=dim (kME)[2], ncol=dim (node.table)[2], data=NA)
+    #message (paste ('dim tmp table:', unlist(dim(tmp.table)),sep="", collapse=","))
+    colnames (tmp.table) <- colnames (node.table)
+    tmp.table <- as.data.frame (tmp.table)
+    tmp.table$nodeName=colnames(kME)
+    tmp.table$pname <- colnames(kME)
+    tmp.table$type='module'
+    tmp.table  <- tmp.table [apply (kME[sel.node.idx,], 2, function(x) {sum (as.numeric (abs(x)> adj.CO))>0}),]
+    node.table=rbind (node.table, tmp.table)
+  }
+  if (debug > 0) message ('Finished node table')
+  
+  ### Edge table
+  if (debug > 0) message ('Constructing edge table')
+  
+  
+  
+  edge.table  <-  melt (adjacency[sel.node.idx, sel.node.idx], value.name='adjacency',  id.vars=c())
+  colnames (edge.table)=c('fromNode', 'toNode','adjacency')
+  ## Remove former diagonal elements
+  message ('Removing diagnonal elements from edge table')
+  edge.table <- edge.table[edge.table$fromNode!=edge.table$toNode,]
+  
+  
+  ## Remove adges with adjacency below cutoff
+  if (pos.adj.only==T) {
+    edge.table  <- edge.table[edge.table$adjacency >= adj.CO,]
+  }
+  else {
+    edge.table  <- edge.table[abs(edge.table$adjacency) >= adj.CO,] 
+  }
+  
+  # if(fixed_n != 0){
+  #   edge.table <- edge.table %>% arrange(desc(adjacency)) %>%
+  #     dplyr::slice(1:fixed_n)
+  # }
+  ## Add edges to Eigengenes, if kME has been provided
+  if (! is.null (kME)) {
+    edge.tmp  <- melt (cbind (row.names(kME[sel.node.idx, ]), kME[sel.node.idx,]), value.name='adjacency', id.vars=c(1))
+    colnames (edge.tmp)=c('fromNode', 'toNode','adjacency')
+    edge.tmp <- edge.tmp[abs(edge.tmp$adjacency) >= adj.CO,]
+    edge.table <- rbind (edge.table, edge.tmp)
+  }
+  ## Transform edge weight and provide unsigned weight
+  edge.table$abs.adjacency <- abs(edge.table$adjacency)
+  edge.table$transf.adjacency  <- sign (edge.table$adjacency) * abs (edge.table$adjacency)^edge.weight.transform.exp
+  edge.table$abs.transf.adjacency  <-  abs (edge.table$adjacency)^edge.weight.transform.exp
+  message ('Finished edge table')
+  ## write node and edge table 
+  write.table (node.table, file=paste(base.name, "-Cytoscape-nodes.csv", sep=""), sep="\t", quote=F,row.names=F)
+  write.table (edge.table, file=paste(base.name , "-Cytoscape-edges.csv",sep=""), sep="\t", quote=F, row.names=F)
+  
+  print(dim(node.table)[1])
+  return(node.table$nodeName)
+}
+
+#' Retrieve or load a biomart table containing the selected Gene_attributes for the provided Gene_IDs
+#' 
+#' @param Gene_IDs        A list of gene IDs for which the biomaRt annotation should be retreived
+#' @param ID_type         the type of the Gene_IDs. Default: "ensembl_gene_id"
+#' @param Gene_attributes A vector of attributes that should be returned. Note that this function will 
+#'                        return a row for the requested gene only if it has a value for ALL attributes!
+#'                        You can retrieve a list of attributes via 'listAttributes(ensembl)' (with a loaded mart!)
+#' @param biomart         Provide your preferred biomaRt web service. You can get a full list via 'listMarts()'
+#' @param dataset         Dataset you want to use. To see the different datasets available within a biomaRt you can 
+#'                        e.g. do: mart = useMart('ensembl'), followed by listDatasets(mart).
+#' @param host            Host to connect to if different then www.biomart.org 
+#' 
+get_biomart_table <- function(Gene_IDs, ID_type, Gene_attributes) {
+  
+  # ids <- gsub("\\.\\d$","", Gene_IDs, perl=TRUE) ## Remove version from gene ids if present
+  
+  myMart <- useMart("ensembl", dataset="hsapiens_gene_ensembl")
+  bmTable <- getBM (attributes = Gene_attributes,
+                    filters = ID_type, 
+                    values = Gene_IDs, 
+                    mart=myMart
+  )
+  return(bmTable)
+}
+
+```
+
+# Analysis
+
+In the following part, we try to infer the ability to **reach a scale-free topology model fit**, **cluster cells** and **infer networks from subclusters**. 
+
+## Sparse data 
+
+### SFT on whole data
+
+Initially we look at the sparse, unimputed data. 
+
+```{r sparse_sft}
+retina <- read.csv(paste0(input,"01_Full_Kim_OrganoidData.csv"), row.names = 1)
+
+```
+### Cluster analysis
+
+```{r sparse_seurat}
+
+ret_sparse <- Seurat_Object(count_data =  retina , 
+                            data_type = "Sparse") 
+
+```
+
+```{r child = 'scNet_sparse_MG_expression.Rmd'}
+```
+
+```{r}
+ret_sparse_matrix <- ret_sparse@assays[["RNA"]]@scale.data
+ret_sparse_matrix <- t(filterData(t(ret_sparse_matrix)))
+FindBetaAndPlot(data = t(ret_sparse_matrix), powers = seq(2,20, by =2), data_set_name = "sparse_whole_scaled")
+```
+
+```{r child='scNet_sparse_beta.Rmd'}
+```
+
+```{r}
+build_tree(t(ret_sparse_matrix), beta = 12 , data_type = "sparse_whole_scaled", minClusterSize =100)
+table(dynamicColors)
+
+Plot_module_hist(module_vector = dynamicColors, imputation_type ="sparse", data_name = "whole")
+```
+```{r child = 'scNet_sparse_dendro.Rmd'}
+```
+
+### Cell type annotation
+
+```{r sparse_annotation}
+# Add additional layer in metadata
+ret_sparse@meta.data$Annotation <- ifelse((ret_sparse@meta.data$RNA_snn_res.0.8 == 0), "Cones",
+                                          ifelse((ret_sparse@meta.data$RNA_snn_res.0.8 == 1 | ret_sparse@meta.data$RNA_snn_res.0.8 == 7), "Rods",
+                                                 ifelse((ret_sparse@meta.data$RNA_snn_res.0.8 == 2 |ret_sparse@meta.data$RNA_snn_res.0.8 == 6), "Müller Glia",
+                                                        ifelse((ret_sparse@meta.data$RNA_snn_res.0.8 == 5), "Cones/MG",
+                                                               ifelse((ret_sparse@meta.data$RNA_snn_res.0.8 == 3 |ret_sparse@meta.data$RNA_snn_res.0.8 == 4),"Unclear", "NA")))))
+# Replot tSNE-Embedding
+
+saveRDS(ret_sparse, file = paste0(rdata,"01_SeuratData_Sparse.rds"))
+
+
+
+DimPlot(ret_sparse, reduction = "tsne", group.by = "Annotation")
+
+
+```
+
+```{r child='scNet_sparse_annotation.Rmd'}
+```
+
+### Subsetting data and infer TOM
+
+```{r sparse_cones}
+
+cones <- Subset_Seurat(seurat_object = ret_sparse, 
+                       cell_type = "Cones", data_type = "sparse", 
+                       save_counts = TRUE)
+cones <- t(filterData(t(cones)))
+
+FindBetaAndPlot(data = t(cones), powers = seq(2,20, by =2), data_set_name = "sparse_cones")
+```
+
+```{r sparse_cones_tree}
+build_tree(t(cones), beta = 6 , data_type = "Cones", minClusterSize =100)
+table(dynamicColors)
+
+Plot_module_hist(module_vector = dynamicColors, imputation_type ="sparse", data_name = "Cones")
+```
+
+```{r child = 'scNet_sparse_cones.Rmd'}
+```
+
+This dendrogram looks like a typical sparse, single cell "Fadengardine"
+
+```{r sparse_rods}
+
+rods <- Subset_Seurat(seurat_object = ret_sparse, 
+                      cell_type = "Rods", data_type = "sparse", 
+                      save_counts = TRUE)
+
+rods <- t(filterData(t(rods)))
+
+FindBetaAndPlot(data = t(rods), powers = seq(2,20, by =2), data_set_name = "sparse_rods")
+```
+
+```{r sparse_rods_tree}
+build_tree(t(rods), beta = 6 , data_type = "Rods", minClusterSize =100)
+table(dynamicColors)
+
+Plot_module_hist(module_vector = dynamicColors, imputation_type ="sparse", data_name = "Rods")
+```
+
+```{r child='scNet_sparse_rods.Rmd'}
+```
+
+
+## Whole data set after DCA imputation
+
+### SFT on whole data
+
+```{r dca_sft}
+retina_dca <- read.csv(paste0(input,"02_BeMa_KIM_DCA.csv"), row.names = 1)
+
+```
+
+We can see that scale-free topology cannot be reached properly. <br>
+Let's take a deeper look
+
+### Cluster analysis
+
+```{r dca_seurat}
+ret_dca <- Seurat_Object(count_data =  t(retina_dca) , 
+                         data_type = "DCA")
+
+
+DotPlot(ret_dca, features = unique(marker_genes[marker_genes %in% rownames(ret_dca)]), group.by = "RNA_snn_res.0.8")
+```
+
+```{r child='scNet_DCA_MG_expression.Rmd'}
+```
+
+```{r}
+ret_dca_matrix <- ret_dca@assays[["RNA"]]@scale.data
+
+ret_dca_matrix <- t(filterData(t(ret_dca_matrix)))
+FindBetaAndPlot(data = t(ret_dca_matrix), powers = seq(2,20, by =2), data_set_name = "DCA_whole_scaled")
+```
+```{r child='scNet_DCA_beta.Rmd'}
+```
+
+```{r d}
+build_tree(t(ret_dca_matrix), beta = 12 , data_type = "DCA_whole_scaled", minClusterSize =100)
+table(dynamicColors)
+
+Plot_module_hist(module_vector = dynamicColors, imputation_type ="DCA", data_name = "whole")
+```
+```{r child = 'scNet_DCA_dendro.Rmd'}
+```
+
+```{r}
+datME_whole=moduleEigengenes(t(ret_dca_matrix),dynamicColors)$eigengenes
+datKME_whole=signedKME(t(ret_dca_matrix), datME_whole, outputColumnName="MM.")
+save(datKME_whole, file = paste0(rdata,"04_MM_whole_DCA.RData"))
+
+```
+
+```{r}
+# modules_whole <- build_goi_df(dynamicColors = dynamicColors, data=ret_dca_matrix )
+# 
+# svg(paste0(results, "R_03_Hist_GOIs_in_whole_Network.svg"), width = 9, height = 5)
+# Distribution_of_gois(modules_df = modules_whole, data_set = "whole retina network")
+# dev.off()
+```
+
+### Cell type annotation
+
+```{r dca_annotation}
+# Add additional layer in metadata
+ret_dca@meta.data$Annotation <- ifelse((ret_dca@meta.data$RNA_snn_res.0.8 == 1 |ret_dca@meta.data$RNA_snn_res.0.8 == 5 | ret_dca@meta.data$RNA_snn_res.0.8 == 8), "Cones",
+                                       ifelse((ret_dca@meta.data$RNA_snn_res.0.8 == 0), "Rods",
+                                              ifelse((ret_dca@meta.data$RNA_snn_res.0.8 == 3 ), "Müller Glia",
+                                                     ifelse((ret_dca@meta.data$RNA_snn_res.0.8 == 6 |ret_dca@meta.data$RNA_snn_res.0.8 == 7),"Unclear", "NA"))))
+# Replot tSNE-Embedding
+
+saveRDS(ret_dca, file = paste0(rdata,"01_SeuratData_DCA.rds"))
+
+#svg(paste0(results, "R_02_Seurat_Annotation_DCA.svg"), width = 10, height = 6)
+DimPlot(ret_dca, reduction = "tsne", group.by = "Annotation")
+#dev.off()
+```
+
+```{r child = 'scNet_DCA_annotation.Rmd'}
+```
+
+### Subsetting data and infer TOM
+#### Cones
+
+```{r dca_cones}
+
+cones <- Subset_Seurat(seurat_object = ret_dca, 
+                       cell_type = "Cones")
+cones <- t(filterData(t(cones)))
+
+save(cones, file = paste0(rdata,"01_Subset_Cones.RData"))
+
+#Calculate_Intersect_Cells(cell_type = "Cones")
+```
+```{r dca_cones_dendro}
+FindBetaAndPlot(data = t(cones), powers = seq(2,20, by =2), data_set_name = "DCA_cones")
+
+```
+
+```{r dca_cones_tree}
+build_tree(t(cones), beta =  12, data_type = "DCA_Cones", minClusterSize =100)
+table(dynamicColors)
+
+Plot_module_hist(module_vector = dynamicColors, imputation_type ="DCA", data_name = "Cones")
+```
+
+```{r child = 'scNet_DCA_cones.Rmd'}
+```
+
+
+```{r}
+datME_cones=moduleEigengenes(t(cones),dynamicColors)$eigengenes
+datKME_cones=signedKME(t(cones), datME_cones, outputColumnName="MM.")
+save(datKME_cones, file = paste0(rdata,"04_MM_cones_DCA.RData"))
+
+```
+
+```{r}
+
+```
+##### Rank-based analysis
+
+```{r}
+Plot_ranks_GOIs(data_KME= datKME_cones, source_ntwk= "Cone")
+
+```
+
+
+
+#### Rods
+
+```{r dca_rods}
+
+rods <- Subset_Seurat(seurat_object = ret_dca, 
+                      cell_type = "Rods")
+
+rods <- t(filterData(t(rods)))
+
+save(rods, file = paste0(rdata,"01_Subset_Rods.RData"))
+#Calculate_Intersect_Cells(cell_type = "Rods")
+```
+
+```{r dca_rods_dendro}
+
+FindBetaAndPlot(data = t(rods), powers = seq(2,20, by =2), data_set_name = "DCA_rods")
+```
+
+```{r dc_rods_tree}
+build_tree(t(rods), beta = 12 , data_type = "DCA_Rods", minClusterSize =100)
+table(dynamicColors)
+
+Plot_module_hist(module_vector = dynamicColors, imputation_type ="DCA", data_name = "Rods")
+```
+```{r child = 'scNet_DCA_rods.Rmd'}
+```
+
+```{r}
+datME_rods=moduleEigengenes(t(rods),dynamicColors)$eigengenes
+datKME_rods=signedKME(t(rods), datME_rods, outputColumnName="MM.")
+save(datKME_rods, file = paste0(rdata,"04_MM_rods_DCA.RData"))
+
+```
+
+
+##### Rank-based analysis
+
+```{r}
+Plot_ranks_GOIs(data_KME= datKME_rods, source_ntwk= "Rod")
+```
+
+###### Where are cone module hubs ?
+
+```{r}
+hub_genes_cone <- datKME_cones %>% 
+  rownames_to_column() %>% 
+  dplyr::select(c(rowname, MM.purple)) %>%
+  arrange(desc(MM.purple)) %>%
+  dplyr::select(rowname) %>% 
+  dplyr::slice(1:20)
+
+
+in_rod <- datKME_rods[unlist(hub_genes_cone),] %>% 
+  melt() %>%
+  set_colnames(c("Module", "MM")) %>%
+  mutate(Module_name = as.factor(gsub(Module, pattern = "MM.", replacement = "")))
+
+p <-  ggplot(in_rod,aes(x = Module_name, y = MM, fill = Module_name)) +
+  geom_boxplot() +
+  ylim(c(-1,1)) + 
+  scale_fill_manual(values= c(levels(in_rod$Module_name))) + 
+  scale_color_manual(values= c(levels(in_rod$Module_name))) + 
+  theme(text = element_text(size=17)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) +
+  theme(panel.grid.major = element_blank(),  panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        axis.line = element_line(colour = "grey50"),
+        legend.position = "none") +
+  xlab('Module')
+
+# Plot labeling
+# labs(title = "Distribution of Module membership values",
+#      subtitle = "Top 20 Hubs from Cone-purple Module in Rod NTWK")
+ggsave( file = paste0(results,"R_06_Boxplot_top20Hub_Cone_purple_in_Rod.pdf"), 
+        width = 10, 
+        height= 4,
+        plot = p, 
+        device = "pdf", 
+        limitsize = FALSE)
+
+
+hub_genes_cone <- datKME_cones %>% 
+  rownames_to_column() %>% 
+  dplyr::select(c(rowname, MM.purple)) %>%
+  arrange(desc(MM.purple)) %>%
+  dplyr::select(rowname) %>% 
+  dplyr::slice(1:20)
+
+
+ranked_MM_df <- apply(-abs(datKME_rods), 2, rank)
+in_rod <-   ranked_MM_df[unlist(hub_genes_cone),] %>% 
+  melt() %>%
+  set_colnames(c("Gene", "Module", "Rank")) %>%
+  mutate(Module_name = as.factor(gsub(Module, pattern = "MM.", replacement = "")))
+
+p <-  ggplot(in_rod,aes(x = Module_name, y = Rank, fill = Module_name)) +
+  geom_boxplot() +
+  # ylim(c(-1,1)) + 
+  scale_fill_manual(values= c(levels(in_rod$Module_name))) + 
+  scale_color_manual(values= c(levels(in_rod$Module_name))) + 
+  theme(text = element_text(size=17)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) +
+  theme(panel.grid.major = element_blank(),  panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        axis.line = element_line(colour = "grey50"),
+        legend.position = "none") +
+  xlab('Module')
+
+# Plot labeling
+# labs(title = "Distribution of Module membership values",
+#      subtitle = "Top 20 Hubs from Cone-purple Module in Rod NTWK")
+ggsave( file = paste0(results,"R_06_Boxplot_top20Hub_Cone_purple_in_Rod_Ranks.pdf"), 
+        width = 10, 
+        height= 4,
+        plot = p, 
+        device = "pdf", 
+        limitsize = FALSE)
+
+```
+```{r}
+hub_genes_rods <- datKME_rods %>% 
+  rownames_to_column() %>% 
+  dplyr::select(c(rowname, MM.greenyellow)) %>%
+  arrange(desc(MM.greenyellow)) %>%
+  dplyr::select(rowname) %>% 
+  dplyr::slice(1:20)
+
+
+ranked_MM_df <- apply(-abs(datKME_cones), 2, rank)
+in_cone <-   ranked_MM_df[unlist(hub_genes_rods),] %>% 
+  melt() %>%
+  set_colnames(c("Gene", "Module", "Rank")) %>%
+  mutate(Module_name = as.factor(gsub(Module, pattern = "MM.", replacement = "")))
+
+# in_cone <- in_cone %>%
+#   mutate(Module_name = gsub(in_cone$Module, pattern = "MM.", replacement = ""))
+
+p <-  ggplot(in_cone,aes(x = Module_name, y = Rank, fill = Module_name)) +
+  geom_boxplot() +
+  # ylim(c(-1,1)) + 
+  scale_fill_manual(values= c(levels(in_cone$Module_name))) + 
+  scale_color_manual(values= c(levels(in_cone$Module_name))) + 
+  theme(text = element_text(size=17)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) +
+  theme(panel.grid.major = element_blank(),  panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        axis.line = element_line(colour = "grey50"),
+        legend.position = "none") +
+  xlab('Module')
+
+# Plot labeling
+# labs(title = "Distribution of Module membership values",
+#      subtitle = "Top 20 Hubs from Rod-greenyellow Module in Cone NTWK")
+ggsave( file = paste0(results,"R_06_Boxplot_top20Hub_Rod_greenyellow_in_Cone_Rank.pdf"), 
+        width = 10, 
+        height= 4,
+        plot = p, 
+        device = "pdf", 
+        limitsize = FALSE)
+
+
+hub_genes_rods <- datKME_rods %>% 
+  rownames_to_column() %>% 
+  dplyr::select(c(rowname, MM.greenyellow)) %>%
+  arrange(desc(MM.greenyellow)) %>%
+  dplyr::select(rowname) %>% 
+  dplyr::slice(1:20)
+
+
+in_cone <- datKME_cones[unlist(hub_genes_rods),] %>% 
+  melt() %>%
+  set_colnames(c("Module", "MM")) %>%
+  mutate(Module_name = as.factor(gsub(Module, pattern = "MM.", replacement = "")))
+
+# in_cone <- in_cone %>%
+#   mutate(Module_name = gsub(in_cone$Module, pattern = "MM.", replacement = ""))
+
+p <-  ggplot(in_cone,aes(x = Module_name, y = MM, fill = Module_name)) +
+  geom_boxplot() +
+  ylim(c(-1,1)) + 
+  scale_fill_manual(values= c(levels(in_cone$Module_name))) + 
+  scale_color_manual(values= c(levels(in_cone$Module_name))) + 
+  theme(text = element_text(size=17)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) +
+  theme(panel.grid.major = element_blank(),  panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        axis.line = element_line(colour = "grey50"),
+        legend.position = "none") +
+  xlab('Module')
+
+# Plot labeling
+# labs(title = "Distribution of Module membership values",
+#      subtitle = "Top 20 Hubs from Rod-greenyellow Module in Cone NTWK")
+ggsave( file = paste0(results,"R_06_Boxplot_top20Hub_Rod_greenyellow_in_Cone.pdf"), 
+        width = 10, 
+        height= 4,
+        plot = p, 
+        device = "pdf", 
+        limitsize = FALSE)
+
+```
+```{r expr_gois}
+test <- subset(x = ret_dca, subset = (Annotation == "Cones" | Annotation == "Rods"))
+
+
+# ranked_MM_df <- as.data.frame(apply(-abs(datKME_cones), 2, rank))
+purple_cones <- as.data.frame(datKME_cones) %>% rownames_to_column() %>% arrange(desc(datKME_cones$MM.purple)) %>%
+  dplyr::slice(1:20) %>% dplyr::select(rowname)
+
+# ranked_MM_df <- as.data.frame(apply(-abs(datKME_rods), 2, rank))
+greenyellow_rods <- as.data.frame(datKME_rods)  %>% rownames_to_column() %>% arrange(desc(datKME_rods$MM.greenyellow)) %>%
+  dplyr::slice(1:20) %>% dplyr::select(rowname)
+
+
+
+test_df <- test@assays[["RNA"]]@scale.data
+test_df_subset <-test_df[union(purple_cones$rowname, greenyellow_rods$rowname),]
+
+# test_df_subset <- rbind(test_df_subset, test$Annotation[colnames(test_df)])
+p <- test_df_subset %>%
+  melt() %>%
+  mutate(Celltype = rep(test$Annotation, each = dim(test_df_subset)[1]))  %>%
+  mutate(Origin = as.factor(ifelse(Var1 %in% purple_cones$rowname, "Cone purple", "Rods greenyellow"))) %>%
+  set_colnames(c("Gene", "Cell", "exprVal", "Celltype", "Origin")) %>%
+  ggplot(aes( x = Celltype, y = exprVal, fill = Celltype)) +
+  geom_boxplot() +
+  geom_point(aes(colour = Celltype),position = position_jitterdodge(), alpha =0.3) +
+  theme(text = element_text(size=18),
+        panel.grid.major = element_blank(),  panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "black", fill=NA, size=0.5),
+        # axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) +
+  xlab('Top 20 Hub-Genes (each)') +
+  ylab("Log-expression values") +
+  labs(title = "Distribution of top 20 Hub genes from \n Cone-GOI-purple module and Rod-GOI-greenyellow module",
+       subtitle = "In Rods and Cones",
+       caption = "n = 40 genes across 672 photoreceptors, \n Normalized and scaled expression data") +
+  facet_grid(cols = vars(Origin), scales = "free_x")
+
+ggsave(filename = paste0(results, "R_09_DistrExpr_Cone_Rod_GOIs.pdf"), device = "pdf", plot = p, width = 10, height = 6)
+
+```
+
+```{r}
+hub_gene_df_cones <- get_top_hubs(datKME_df= datKME_cones, n_hubs=20)
+
+subset_df <- datKME_cones[unlist(hub_gene_df_cones),] %>%
+  rownames_to_column() %>%
+  melt() %>%
+  set_colnames(c("Gene","Module_Cones", "MM_Cones"))
+
+
+subset_df$Hub_Cones <- factor(ifelse(subset_df$Gene %in% hub_gene_df_cones$black == TRUE, "black",
+                                     ifelse(subset_df$Gene %in% hub_gene_df_cones$blue == TRUE, "blue",
+                                            ifelse(subset_df$Gene %in% hub_gene_df_cones$brown == TRUE, "brown",
+                                                   ifelse(subset_df$Gene %in% hub_gene_df_cones$green == TRUE, "green",
+                                                          ifelse(subset_df$Gene %in% hub_gene_df_cones$greenyellow == TRUE, "greenyellow",
+                                                                 ifelse(subset_df$Gene %in% hub_gene_df_cones$magenta == TRUE, "magenta",
+                                                                        ifelse(subset_df$Gene %in% hub_gene_df_cones$pink == TRUE, "pink",
+                                                                               ifelse(subset_df$Gene %in% hub_gene_df_cones$purple == TRUE, "purple",
+                                                                                      ifelse(subset_df$Gene %in% hub_gene_df_cones$red == TRUE, "red",
+                                                                                             ifelse(subset_df$Gene %in% hub_gene_df_cones$turquoise == TRUE, "turquoise",
+                                                                                                    ifelse(subset_df$Gene %in% hub_gene_df_cones$yellow == TRUE, "yellow",
+                                                                                                           ifelse(subset_df$Gene %in% hub_gene_df_cones$midnightblue == TRUE, "midnightblue",
+                                                                                                                  ifelse(subset_df$Gene %in% hub_gene_df_cones$salmon == TRUE, "salmon",
+                                                                                                                         ifelse(subset_df$Gene %in% hub_gene_df_cones$tan == TRUE, "tan",
+                                                                                                                                ifelse(subset_df$Gene %in% hub_gene_df_cones$cyan == TRUE, "cyan","NA"))))))))))))))))
+
+subset_df$cor <-  ifelse(gsub(subset_df$Module, pattern = "MM.", replacement = "") == subset_df$Hub_Cones , TRUE,FALSE)
+subset_cone_hubs <- subset_df %>% filter(cor == TRUE)
+HubCones_in_Rod <- datKME_rods[unlist(hub_gene_df_cones),] %>%
+  rownames_to_column() %>%
+  melt() %>%
+  set_colnames(c("Gene", "Module_Rods", "MM_Rods"))
+
+part_one <- merge(subset_cone_hubs, HubCones_in_Rod, by = "Gene")
+# part_one <- part_one %>% select(-c(Hub_Cones, cor))
+
+#------------------------------------#
+
+hub_gene_df_rods <- get_top_hubs(datKME_df= datKME_rods, n_hubs=20)
+
+subset_df <- datKME_rods[unlist(hub_gene_df_rods),] %>%
+  rownames_to_column() %>%
+  melt() %>%
+  set_colnames(c("Gene","Module_Rods", "MM_Rods"))
+
+
+subset_df$Hub_Rods <- factor(ifelse(subset_df$Gene %in% hub_gene_df_rods$black == TRUE, "black",
+                                    ifelse(subset_df$Gene %in% hub_gene_df_rods$blue == TRUE, "blue",
+                                           ifelse(subset_df$Gene %in% hub_gene_df_rods$brown == TRUE, "brown",
+                                                  ifelse(subset_df$Gene %in% hub_gene_df_rods$green == TRUE, "green",
+                                                         ifelse(subset_df$Gene %in% hub_gene_df_rods$greenyellow == TRUE, "greenyellow",
+                                                                ifelse(subset_df$Gene %in% hub_gene_df_rods$magenta == TRUE, "magenta",
+                                                                       ifelse(subset_df$Gene %in% hub_gene_df_rods$pink == TRUE, "pink",
+                                                                              ifelse(subset_df$Gene %in% hub_gene_df_rods$purple == TRUE, "purple",
+                                                                                     ifelse(subset_df$Gene %in% hub_gene_df_rods$red == TRUE, "red",
+                                                                                            ifelse(subset_df$Gene %in% hub_gene_df_rods$turquoise == TRUE, "turquoise",
+                                                                                                   ifelse(subset_df$Gene %in% hub_gene_df_rods$yellow == TRUE, "yellow",
+                                                                                                          ifelse(subset_df$Gene %in% hub_gene_df_rods$midnightblue == TRUE, "midnightblue",
+                                                                                                                 ifelse(subset_df$Gene %in% hub_gene_df_rods$salmon == TRUE, "salmon",
+                                                                                                                        ifelse(subset_df$Gene %in% hub_gene_df_rods$tan == TRUE, "tan",
+                                                                                                                               ifelse(subset_df$Gene %in% hub_gene_df_rods$cyan == TRUE, "cyan","NA"))))))))))))))))
+
+subset_df$cor <-  ifelse(gsub(subset_df$Module_Rod, pattern = "MM.", replacement = "") == subset_df$Hub_Rods , TRUE,FALSE)
+subset_rods_hubs <- subset_df %>% filter(cor == TRUE)
+HubRods_in_Cones <- datKME_cones[unlist(hub_gene_df_rods),] %>%
+  rownames_to_column() %>%
+  melt() %>%
+  set_colnames(c("Gene", "Module_Cones", "MM_Cones"))
+
+part_two <- merge(HubRods_in_Cones,subset_rods_hubs, by = "Gene")
+# part_two <- part_two %>% select(-c(Hub_Rods, cor))
+part_one <- part_one %>% select(c("Gene", "Module_Cones", "MM_Cones", "Module_Rods", "MM_Rods"))
+part_two <- part_two %>% select(c("Gene", "Module_Cones", "MM_Cones", "Module_Rods", "MM_Rods"))
+part_one <- part_one %>% mutate ("Source" = as.factor(rep("Cone", dim(part_one)[1])))
+part_two <- part_two %>% mutate ("Source" = as.factor(rep("Rod", dim(part_two)[1])))
+
+together <- rbind(part_one, part_two)
+together$Module_Cones <- gsub(together$Module_Cones, pattern= "MM.", replacement = "")
+together$Module_Rods <- gsub(together$Module_Rods, pattern= "MM.", replacement = "")
+
+p <- ggplot(together , aes(x = MM_Cones, y =MM_Rods)) +
+  geom_point( size = 5, aes( colour = Source)) +
+  # coord_cartesian(ylim = c(-1,1), xlim = c(-1,1)) +
+  scale_y_continuous(breaks = c(-1,0,1)) +
+  scale_x_continuous(breaks = c(-1,0,1)) +
+  # xlim(c(-1,1)) +
+  theme(text = element_text(size=22),
+        panel.grid.major = element_blank(),  panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "black", fill=NA, size=0.5)) +
+  facet_grid(cols = vars(Module_Cones), rows = vars(Module_Rods)) +
+  xlab("MM from Cone NTWK") +
+  ylab("MM from Rods NTWK")
+
+ggsave( file = paste0(results,"R_06_Scatterplot_topHubs.pdf"),
+        width = 30,
+        height= 25,
+        plot = p,
+        device = "pdf",
+        limitsize = FALSE)
+
+```
+
+```{r lost_hubs}
+hub_gene_df_cones <- get_top_hubs(datKME_df= datKME_cones, n_hubs=20)
+
+subset_df <- datKME_cones[unlist(hub_gene_df_cones),] %>%
+  rownames_to_column() %>%
+  melt() %>% 
+  set_colnames(c("Gene","Module_Cones", "MM_Cones"))
+
+
+subset_df$Hub_Cones <- factor(ifelse(subset_df$Gene %in% hub_gene_df_cones$black == TRUE, "black", 
+                                     ifelse(subset_df$Gene %in% hub_gene_df_cones$blue == TRUE, "blue",
+                                            ifelse(subset_df$Gene %in% hub_gene_df_cones$brown == TRUE, "brown",
+                                                   ifelse(subset_df$Gene %in% hub_gene_df_cones$green == TRUE, "green",
+                                                          ifelse(subset_df$Gene %in% hub_gene_df_cones$greenyellow == TRUE, "greenyellow",
+                                                                 ifelse(subset_df$Gene %in% hub_gene_df_cones$magenta == TRUE, "magenta",
+                                                                        ifelse(subset_df$Gene %in% hub_gene_df_cones$pink == TRUE, "pink",
+                                                                               ifelse(subset_df$Gene %in% hub_gene_df_cones$purple == TRUE, "purple",
+                                                                                      ifelse(subset_df$Gene %in% hub_gene_df_cones$red == TRUE, "red",
+                                                                                             ifelse(subset_df$Gene %in% hub_gene_df_cones$turquoise == TRUE, "turquoise",
+                                                                                                    ifelse(subset_df$Gene %in% hub_gene_df_cones$yellow == TRUE, "yellow",
+                                                                                                           ifelse(subset_df$Gene %in% hub_gene_df_cones$midnightblue == TRUE, "midnightblue",
+                                                                                                                  ifelse(subset_df$Gene %in% hub_gene_df_cones$salmon == TRUE, "salmon",
+                                                                                                                         ifelse(subset_df$Gene %in% hub_gene_df_cones$tan == TRUE, "tan",
+                                                                                                                                ifelse(subset_df$Gene %in% hub_gene_df_cones$cyan == TRUE, "cyan","NA"))))))))))))))))
+
+subset_df$cor <-  ifelse(gsub(subset_df$Module, pattern = "MM.", replacement = "") == subset_df$Hub_Cones , TRUE,FALSE)
+subset_cone_hubs <- subset_df %>% filter(cor == TRUE)
+
+max_Cone_hubs <- subset_cone_hubs %>%  mutate(Module_cone_name = gsub(subset_cone_hubs$Module_Cones, pattern = "MM.", replacement = "")) %>% group_by(Gene, Module_cone_name) %>% summarize(max_Cones = max(MM_Cones)) 
+from_rods <- datKME_rods[max_Cone_hubs$Gene,] %>%
+  rownames_to_column() %>%
+  melt() %>%
+  set_colnames(c("Gene", "Module_Rods", "MM_Rods")) %>% 
+  group_by(Gene) %>%
+  summarize(max_Rods=max(MM_Rods)) 
+max_Cone_hubs$max_Rods <- from_rods$max_Rods
+
+
+p <- max_Cone_hubs %>% 
+  ggplot(aes(x = max_Cones, y = max_Rods)) + 
+  geom_point(color = ifelse( max_Cone_hubs$max_Rods > 0.8, 'black', 'red'), size = 2)+ 
+  coord_cartesian(xlim = c(0,1), ylim =c(0,1))+ 
+  xlab("Max MM Cone Hubs in Cone NTWK") + 
+  ylab("Max MM Cone Hubs in \n Rod NTWK") +
+  theme(text = element_text(size=15), 
+        panel.grid.major = element_blank(),  
+        panel.grid.minor = element_blank(), 
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "black", fill=NA, size=0.5)) +
+  scale_x_continuous(breaks=c(0,0.5,1), labels=c(0,0.5,1)) +
+  scale_y_continuous(breaks=c(0,0.5,1), labels=c(0,0.5,1))  + 
+  facet_grid(cols = vars(Module_cone_name))
+
+ggsave(filename = paste0(results,"000_HubsLost_ConeHubs.pdf"),plot = p, width = 15, height = 4, limitsize = FALSE)
+
+
+hub_gene_df_rods <- get_top_hubs(datKME_df= datKME_rods, n_hubs=20)
+
+subset_df <- datKME_rods[unlist(hub_gene_df_rods),] %>%
+  rownames_to_column() %>%
+  melt() %>%
+  set_colnames(c("Gene","Module_Rods", "MM_Rods"))
+
+
+subset_df$Hub_Rods <- factor(ifelse(subset_df$Gene %in% hub_gene_df_rods$black == TRUE, "black", 
+                                    ifelse(subset_df$Gene %in% hub_gene_df_rods$blue == TRUE, "blue",
+                                           ifelse(subset_df$Gene %in% hub_gene_df_rods$brown == TRUE, "brown",
+                                                  ifelse(subset_df$Gene %in% hub_gene_df_rods$green == TRUE, "green",
+                                                         ifelse(subset_df$Gene %in% hub_gene_df_rods$greenyellow == TRUE, "greenyellow",
+                                                                ifelse(subset_df$Gene %in% hub_gene_df_rods$magenta == TRUE, "magenta",
+                                                                       ifelse(subset_df$Gene %in% hub_gene_df_rods$pink == TRUE, "pink",
+                                                                              ifelse(subset_df$Gene %in% hub_gene_df_rods$purple == TRUE, "purple",
+                                                                                     ifelse(subset_df$Gene %in% hub_gene_df_rods$red == TRUE, "red",
+                                                                                            ifelse(subset_df$Gene %in% hub_gene_df_rods$turquoise == TRUE, "turquoise",
+                                                                                                   ifelse(subset_df$Gene %in% hub_gene_df_rods$yellow == TRUE, "yellow",
+                                                                                                          ifelse(subset_df$Gene %in% hub_gene_df_rods$midnightblue == TRUE, "midnightblue",
+                                                                                                                 ifelse(subset_df$Gene %in% hub_gene_df_rods$salmon == TRUE, "salmon",
+                                                                                                                        ifelse(subset_df$Gene %in% hub_gene_df_rods$tan == TRUE, "tan",
+                                                                                                                               ifelse(subset_df$Gene %in% hub_gene_df_rods$cyan == TRUE, "cyan","NA"))))))))))))))))
+
+subset_df$cor <-  ifelse(gsub(subset_df$Module_Rod, pattern = "MM.", replacement = "") == subset_df$Hub_Rods , TRUE,FALSE)
+subset_rods_hubs <- subset_df %>% filter(cor == TRUE)
+
+max_Rod_hubs <- subset_rods_hubs %>%  mutate(Module_rods_name = gsub(subset_rods_hubs$Module_Rods, pattern = "MM.", replacement = "")) %>% group_by(Gene, Module_rods_name) %>% summarize(max_Rods = max(MM_Rods))
+from_cones <- datKME_cones[max_Rod_hubs$Gene,] %>%
+  rownames_to_column() %>%
+  melt() %>%
+  set_colnames(c("Gene", "Module_Rods", "MM_Cones")) %>% 
+  group_by(Gene) %>%
+  summarize(max_Cones=max(MM_Cones)) 
+max_Rod_hubs$max_Cones <- from_cones$max_Cones
+
+
+
+
+p <- max_Rod_hubs %>% 
+  ggplot(aes(x = max_Rods, y = max_Cones)) + 
+  geom_point(color = ifelse( max_Rod_hubs$max_Cones > 0.8, 'black', 'red'))+ 
+  coord_cartesian(xlim = c(0,1), ylim =c(0,1))+ 
+  xlab("Max MM Rod Hubs in Rod NTWK") + 
+  ylab("Max MM Rod Hubs in \n Cone NTWK") +
+  theme(text = element_text(size=15), 
+        panel.grid.major = element_blank(),  
+        panel.grid.minor = element_blank(), 
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "black", fill=NA, size=0.5)) +
+  scale_x_continuous(breaks=c(0,0.5,1), labels=c(0,0.5,1)) +
+  scale_y_continuous(breaks=c(0,0.5,1), labels=c(0,0.5,1))  + 
+  facet_grid(cols = vars(Module_rods_name))
+
+ggsave(filename = paste0(results,"000_HubsLost_RodHubs.pdf"),plot = p, width = 15, height = 4, limitsize = FALSE)
+
+```
+
+```{r}
+sessionInfo()
+
+```

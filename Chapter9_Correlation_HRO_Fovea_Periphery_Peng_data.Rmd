@@ -1,0 +1,376 @@
+---
+title: "20200710 SC MK Analysis Peng"
+author: "Lisa"
+date: "July 10, 2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+# Functions
+
+```{r}
+input <- "/data/bioinf/projects/data/2019_schROHT/2021_Foveal_Peripheral_R/Peng_data/input/"
+rdata <- "/data/bioinf/projects/data/2019_schROHT/2021_Foveal_Peripheral_R/Peng_data/RData/"
+results <- "/data/bioinf/projects/data/2019_schROHT/2021_Foveal_Peripheral_R/Peng_data/results/"
+
+project <- "Peng_data"
+
+library('plyr')
+library("data.table")
+library("rhdf5")
+library('tidyverse')
+
+theme_basic <- function() {
+  theme_bw(base_size = 30) +
+    theme(strip.background = element_blank(), 
+          panel.grid.major = element_blank(), 
+          panel.grid.minor = element_blank(), 
+          strip.text.x = element_blank())
+}
+
+theme_basic2 <- function() {
+  theme_bw(base_size = 19) +
+    theme(strip.background = element_blank(), 
+          panel.grid.major = element_blank(), 
+          panel.grid.minor = element_blank())
+}
+
+
+# Data
+# https://singlecell.broadinstitute.org/single_cell/study/SCP212/molecular-specification-of-retinal-cell-types-underlying-central-and-peripheral-vision-in-primates
+
+
+
+
+get_mean_vectors <- function(data_name,annotation, cell_type, data_set_name){
+  # Load expression set and preprocess it
+  # --------------------------------------------------------------------------------- #
+  data_set <- fread(paste0(input, data_name))
+  rownames(data_set) <- data_set$GENE
+  data_set_subset <-data_set[,-1]
+  colnames(data_set_subset) <- gsub(colnames(data_set_subset), pattern="\\.", replacement = "-")
+  
+  # Load annotation and preprocess it
+  # --------------------------------------------------------------------------------- #
+  annotation <- read.csv(file = paste0(input, annotation)) 
+  annotation <- annotation[-1,]
+  
+  # Subsample based on celltype
+  # --------------------------------------------------------------------------------- #
+  
+  if (cell_type == "Cones"){
+    Cell_types <- annotation %>% filter(Cluster != "Rods")}
+  else {
+    Cell_types <- annotation %>% filter(Cluster == as.character(cell_type))
+  }
+  
+  intersect_cells <- intersect(Cell_types$NAME, colnames(data_set_subset))
+  
+  # Generate gene mean vector
+  # --------------------------------------------------------------------------------- #
+  gene_mean <- data.frame(GeneMeans = rowMeans(data_set_subset[,..intersect_cells]))
+  rownames(gene_mean) <- data_set$GENE
+  
+  
+  # Save data to .RData
+  # --------------------------------------------------------------------------------- #
+  save(gene_mean, file = paste0(rdata, "01_GeneMeans_", data_set_name,".RData"))
+  #write.csv(gene_means, file = paste0(rdata, "01_GeneMeans_FV_rods.csv"))
+  rm(data_set,data_set_subset, Cell_types, gene_mean)
+}
+
+
+```
+# Load expression and annotation
+
+```{r}
+
+get_mean_vectors(data_name = "Macaque_fov_PR_expression.txt",
+                 annotation = "Macaque_fov_PR_coordinates.txt", 
+                 cell_type = "Cones", 
+                 data_set_name = "Cones_Fovea")
+
+get_mean_vectors(data_name = "Macaque_per_PR_expression.txt",
+                 annotation = "Macaque_per_PR_coordinates.txt",
+                 cell_type = "Cones", 
+                 data_set_name = "Cones_Peripheral")
+
+get_mean_vectors(data_name = "Macaque_fov_PR_expression.txt",
+                 annotation = "Macaque_fov_PR_coordinates.txt", 
+                 cell_type = "Rods", 
+                 data_set_name = "Rods_Fovea")
+
+get_mean_vectors(data_name = "Macaque_per_PR_expression.txt",
+                 annotation = "Macaque_per_PR_coordinates.txt",
+                 cell_type = "Rods", 
+                 data_set_name = "Rods_Peripheral")
+
+get_mean_vectors(data_name = "Macaque_fov_EpiImmune_expression.txt",
+                 annotation = "Macaque_fov_NN_coordinates.txt", 
+                 cell_type = "MG", 
+                 data_set_name = "Muller-Glial_Fovea")
+
+get_mean_vectors(data_name = "Macaque_per_EpiImmune_expression.txt",
+                 annotation = "Macaque_per_NN_coordinates.txt",
+                 cell_type = "MG", 
+                 data_set_name = "Muller-Glial_Peripheral")
+
+
+
+```
+#Load single cell data CTRL 2
+
+```{r}
+# prepare single cell data
+# leave counts in single cell data
+# then we can ensure comparability
+
+
+
+# h5ad_file <- "/home/steinheu/Data/2020_NatCom_MK/Scheetz_Retina/input/20200713_CTRL_2_Cells_higherResolution_pp.h5ad"
+# 
+# obs <- h5read(h5ad_file, name = "obs")
+
+load('/data/bioinf/projects/data/2019_schROHT/2021_Foveal_Peripheral_R/RData/CaSTLe_Annot_output_Control_2_Organoid_cellnames.RData')
+sc_data <- read.csv("/data/bioinf/projects/data/2019_schROHT/2021_Foveal_Peripheral_R/csvs/Count_data_schROHT_Control2.csv", row.names = 1, header = T)
+sc_data_log<- log10(sc_data+1)
+# Load Gene Means
+
+
+
+load(paste0(rdata, "01_GeneMeans_Cones_Fovea.RData"))
+gene_means_cones_fov <- gene_mean
+load(paste0(rdata, "01_GeneMeans_Cones_Peripheral.RData"))
+gene_means_cones_per <- gene_mean
+
+load(paste0(rdata, "01_GeneMeans_Rods_Fovea.RData"))
+gene_means_rods_fov <- gene_mean
+load(paste0(rdata, "01_GeneMeans_Rods_Peripheral.RData"))
+gene_means_rods_per <- gene_mean
+
+load(paste0(rdata, "01_GeneMeans_Muller-Glial_Fovea.RData"))
+gene_means_MG_fov <- gene_mean
+load(paste0(rdata, "01_GeneMeans_Muller-Glial_Peripheral.RData"))
+gene_means_MG_per <- gene_mean
+
+# Define intersect genes
+
+intersect_genes_peng <- intersect(rownames(gene_means_MG_per), rownames(gene_means_MG_fov))
+
+intersect_genes_sc <- Reduce(intersect, list(rownames(gene_means_cones_fov), 
+                                             rownames(gene_means_cones_per), 
+                                             rownames(gene_means_rods_fov), 
+                                             rownames(gene_means_rods_per), 
+                                             rownames(gene_means_MG_fov), 
+                                             rownames(gene_means_MG_per), 
+                                             colnames(sc_data_log)))
+
+single_cell_subset <- sc_data_log[,intersect_genes_sc]
+
+
+combined_data <- rbind(gene_means_cones_fov[intersect_genes_sc,],
+                       gene_means_cones_per[intersect_genes_sc,],
+                       gene_means_rods_fov[intersect_genes_sc,],
+                       gene_means_rods_per[intersect_genes_sc,],
+                       gene_means_MG_fov[intersect_genes_sc,],
+                       gene_means_MG_per[intersect_genes_sc,],
+                       single_cell_subset)
+
+rownames(combined_data) <- c("Cones fovea", "Cones peripheral","Rods fovea","Rods peripheral","Müller Glia fovea", "Müller Glia peripheral", rownames(single_cell_subset))
+
+correlation_mat <- cor(t(combined_data))
+
+save(correlation_mat, file = paste0(rdata, "01_Correlation_AllCells_CTRL2.RData"))
+```
+
+# Analysis
+## All Cells
+
+```{r}
+
+#load(paste0(rdata, "01_Correlation_PER_FV_CTRL3.RData"))
+
+red_mat <- red_mat <- correlation_mat[-c(1:6), 1:6]
+```
+
+### Violin Plot correlation
+
+```{r}
+# rownames(obs) <- obs$index
+cor_louvain <- cbind(red_mat, predictedClasses)
+colnames(cor_louvain) <- c(colnames(red_mat), "Louvain")
+
+cor_louv <- data.frame("Retina type" = as.factor(c(rep(colnames(cor_louvain)[-dim(cor_louvain)[2]], each = dim(cor_louvain)[1]))),
+                       "Correlation" = as.vector(red_mat),
+                       "Celltype"= as.factor(rep(cor_louvain[,dim(cor_louvain)[2]],dim(red_mat)[2])))
+
+cor_louv$Celltype <- revalue(cor_louv$Celltype, replace = c("MC" = "Müller Glia",
+                                                            "cones" = "Cones",
+                             "rod" = "Rods"))
+cor_louv$Groups <- gsub(cor_louv$Retina.type, pattern = "_donor_[1-3]", replacement = "")
+cor_louv$Groups <- gsub(cor_louv$Groups, pattern = "_", replacement = " ")
+cor_louv$Correspondance <- ifelse((gsub(cor_louv$Groups, pattern = " fovea", replacement = "") == cor_louv$Celltype | 
+                                     gsub(cor_louv$Groups, pattern = " peripheral", replacement = "") == cor_louv$Celltype) , TRUE,FALSE)
+
+
+save(cor_louv, file = paste0(rdata, "04_", project, "_DF_Annotation_Control2.RData"))
+```
+
+```{r}
+svg(paste0(results,"01_",project, "_Alt_Figure_Correlation_Control2_CaSTLE.svg"),
+    width = 10, height = 5)
+ggplot(
+  cor_louv %>% filter(Celltype  == "Rods"| Celltype  =="Cones" | Celltype  =="Müller Glia") %>%
+    filter(Correspondance == TRUE),
+  aes(x = Groups, y = Correlation, fill= Groups)) +
+  geom_violin(trim=FALSE) +
+  geom_boxplot(width = 0.1) +
+  coord_cartesian(ylim = c(0,1)) +
+  xlab("Retina type") +
+  ylab("Correlation") +
+  theme_basic2() +
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.title.x=element_blank(),
+        text=element_text(size=20),
+        legend.position="bottom") +
+  # labs(title = "Correlation of schROHT photoreceptors and MG cells \n towards peripheral and foveal reference data",
+  #      subtitle = paste("Control 2"," - Annotation based on higher resolution"),
+  #      caption = expression(paste("Reference data taken from Voigt ", italic("et. al")))) +
+  scale_fill_manual(values=c("#BA2BB2", "#F79CF2","#0000FF", "#6363F3", "#0BA8AF", "#9BF4F8")) +
+  #scale_color_manual(values=c("#BA2BB2", "#EB59E3", "#13BBC3", "#2EE6EE")) +
+  facet_wrap(vars(Celltype), scales = "free_x")
+dev.off()
+
+```
+
+```{r}
+# prepare single cell data
+# leave counts in single cell data
+# then we can ensure comparability
+
+
+# h5ad_file <- "/home/steinheu/Data/2020_NatCom_MK/Scheetz_Retina/input/20200713_CTRL_3_Cells_higherResolution_pp.h5ad"
+# 
+# obs <- h5read(h5ad_file, name = "obs")
+
+load('/data/bioinf/projects/data/2019_schROHT/2021_Foveal_Peripheral_R/RData/CaSTLe_Annot_output_Control_3_Organoid_cellnames.RData')
+sc_data <- read.csv("/data/bioinf/projects/data/2019_schROHT/2021_Foveal_Peripheral_R/csvs/Count_data_schROHT_Control3.csv", row.names = 1, header = T)
+sc_data_log<- log10(sc_data+1)
+# Load Gene Means
+
+
+
+load(paste0(rdata, "01_GeneMeans_Cones_Fovea.RData"))
+gene_means_cones_fov <- gene_mean
+load(paste0(rdata, "01_GeneMeans_Cones_Peripheral.RData"))
+gene_means_cones_per <- gene_mean
+
+load(paste0(rdata, "01_GeneMeans_Rods_Fovea.RData"))
+gene_means_rods_fov <- gene_mean
+load(paste0(rdata, "01_GeneMeans_Rods_Peripheral.RData"))
+gene_means_rods_per <- gene_mean
+
+load(paste0(rdata, "01_GeneMeans_Muller-Glial_Fovea.RData"))
+gene_means_MG_fov <- gene_mean
+load(paste0(rdata, "01_GeneMeans_Muller-Glial_Peripheral.RData"))
+gene_means_MG_per <- gene_mean
+
+# Define intersect genes
+
+intersect_genes_peng <- intersect(rownames(gene_means_MG_per), rownames(gene_means_MG_fov))
+
+intersect_genes_sc <- Reduce(intersect, list(rownames(gene_means_cones_fov), 
+                                             rownames(gene_means_cones_per), 
+                                             rownames(gene_means_rods_fov), 
+                                             rownames(gene_means_rods_per), 
+                                             rownames(gene_means_MG_fov), 
+                                             rownames(gene_means_MG_per), 
+                                             colnames(sc_data_log)))
+
+single_cell_subset <- sc_data_log[,intersect_genes_sc]
+
+
+combined_data <- rbind(gene_means_cones_fov[intersect_genes_sc,],
+                       gene_means_cones_per[intersect_genes_sc,],
+                       gene_means_rods_fov[intersect_genes_sc,],
+                       gene_means_rods_per[intersect_genes_sc,],
+                       gene_means_MG_fov[intersect_genes_sc,],
+                       gene_means_MG_per[intersect_genes_sc,],
+                       single_cell_subset)
+
+rownames(combined_data) <- c("Cones fovea", "Cones peripheral","Rods fovea","Rods peripheral","Müller Glia fovea", "Müller Glia peripheral", rownames(single_cell_subset))
+
+correlation_mat <- cor(t(combined_data))
+
+save(correlation_mat, file = paste0(rdata, "01_Correlation_AllCells_CTRL3.RData"))
+```
+
+# Analysis
+## All Cells
+
+```{r}
+
+#load(paste0(rdata, "01_Correlation_PER_FV_CTRL3.RData"))
+
+red_mat <- red_mat <- correlation_mat[-c(1:6), 1:6]
+```
+
+### Violin Plot correlation
+
+```{r}
+# rownames(obs) <- obs$index
+cor_louvain <- cbind(red_mat, predictedClasses)
+colnames(cor_louvain) <- c(colnames(red_mat), "Louvain")
+
+cor_louv <- data.frame("Retina type" = as.factor(c(rep(colnames(cor_louvain)[-dim(cor_louvain)[2]], each = dim(cor_louvain)[1]))),
+                       "Correlation" = as.vector(red_mat),
+                       "Celltype"= as.factor(rep(cor_louvain[,dim(cor_louvain)[2]],dim(red_mat)[2])))
+
+cor_louv$Celltype <- revalue(cor_louv$Celltype, replace = c("MC" = "Müller Glia",
+                                                            "cones" = "Cones",
+                             "rod" = "Rods"))
+cor_louv$Groups <- gsub(cor_louv$Retina.type, pattern = "_donor_[1-3]", replacement = "")
+cor_louv$Groups <- gsub(cor_louv$Groups, pattern = "_", replacement = " ")
+cor_louv$Correspondance <- ifelse((gsub(cor_louv$Groups, pattern = " fovea", replacement = "") == cor_louv$Celltype | 
+                                     gsub(cor_louv$Groups, pattern = " peripheral", replacement = "") == cor_louv$Celltype) , TRUE,FALSE)
+
+# cor_louv$Groups <- gsub(cor_louv$Groups, pattern = "Muller-Glia", replacement = "Müller Glia")
+# cor_louv$Celltype <- gsub(cor_louv$Celltype, pattern = "Muller-Glia", replacement = "Müller Glia")
+# cor_louv$Cellname <- rep(rownames(cor_louvain), 18)
+# cor_louv$paired <- rep(1:6665, 18)
+# cor_louv$donor <- rep(1:6665, 18)
+
+save(cor_louv, file = paste0(rdata, "04_", project, "_DF_Annotation_Control3.RData"))
+```
+
+```{r}
+svg(paste0(results,"01_",project, "_Alt_Figure_Correlation_Control3_CaSTLE.svg"),
+    width = 10, height = 5)
+ggplot(
+  cor_louv %>% filter(Celltype  == "Rods"| Celltype  =="Cones" | Celltype  =="Müller Glia") %>%
+    filter(Correspondance == TRUE),
+  aes(x = Groups, y = Correlation, fill= Groups)) +
+  geom_violin(trim=FALSE) +
+  geom_boxplot(width = 0.1) +
+  coord_cartesian(ylim = c(0,1)) +
+  xlab("Retina type") +
+  ylab("Correlation") +
+  theme_basic2() +
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.title.x=element_blank(),
+        text=element_text(size=20),
+        legend.position="bottom") +
+  # labs(title = "Correlation of schROHT photoreceptors and MG cells \n towards peripheral and foveal reference data",
+  #      subtitle = paste("Control 2"," - Annotation based on higher resolution"),
+  #      caption = expression(paste("Reference data taken from Voigt ", italic("et. al")))) +
+  scale_fill_manual(values=c("#BA2BB2", "#F79CF2","#0000FF", "#6363F3", "#0BA8AF", "#9BF4F8")) +
+  #scale_color_manual(values=c("#BA2BB2", "#EB59E3", "#13BBC3", "#2EE6EE")) +
+  facet_wrap(vars(Celltype), scales = "free_x")
+dev.off()
+
+```
+

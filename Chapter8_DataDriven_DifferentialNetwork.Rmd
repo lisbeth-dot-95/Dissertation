@@ -1,0 +1,489 @@
+---
+title: "Networks From Retina Part 2"
+author: "Lisa"
+date: "7/23/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+# Aim
+
+With this analysis we try to answer the following questions; <br>
+* Can we reach a sft model fit after data imputation? <br>
+* How *good* do the dendrograms look?
+* How similiar are the networks?
+
+# Set-up
+
+## Directories
+
+```{r directories}
+dir_name <- "/data/bioinf/projects/data/2021_NetworksRetina/"
+input <- paste0(dir_name, "input/")
+rdata <- paste0(dir_name, "RData/")
+results <- paste0(dir_name, "results/")
+csvs <- paste0(dir_name, "csvs/")
+
+```
+
+## Packages
+
+```{r packages, error=FALSE, warning=FALSE, message=FALSE}
+library("WGCNA")
+library("Seurat")
+library("ggplot2")
+library("forcats")
+library("tidyverse")
+library(biomaRt)
+library("jaccard")
+library(reshape2)
+library(magrittr)
+library(DT)
+library(xtable)
+```
+
+```{r functions,  error=FALSE, warning=FALSE, message=FALSE}
+
+
+ret_dca <- readRDS(paste0(rdata,"01_SeuratData_DCA.rds"))
+load(paste0(rdata,"01_Subset_Cones.RData"))
+load(paste0(rdata,"01_Subset_Rods.RData"))
+load(paste0(rdata,"04_MM_cones_DCA.RData"))
+load(paste0(rdata,"04_MM_rods_DCA.RData"))
+
+
+get_top_hubs <- function(datKME_df, n_hubs){
+  hub_genes <- list()
+  for (i in 1:dim(datKME_df)[2]){
+    hub_genes[[i]] <- datKME_df %>% 
+      rownames_to_column() %>% 
+      arrange(desc(datKME_df[,i])) %>%
+      dplyr::select(rowname) %>% 
+      dplyr::slice(1:n_hubs)
+    hub_genes[[i]] <- hub_genes[[i]]$rowname}
+  names(hub_genes) <- gsub(colnames(datKME_df), pattern = "MM.", replacement = "")
+  return(hub_genes)
+}
+
+
+
+ret_dca <- readRDS(paste0(rdata,"01_SeuratData_DCA.rds"))
+load(paste0(rdata,"01_Subset_Cones.RData"))
+load(paste0(rdata,"01_Subset_Rods.RData"))
+load(paste0(rdata,"04_MM_cones_DCA.RData"))
+load(paste0(rdata,"04_MM_rods_DCA.RData"))
+#' Export the subnetwork densely connected to a particular node to Cytoscape
+#' 
+#' This function selects a set of nodes based on connecivity to a given node and produced export objects for Cytoscape.  
+#' 
+#' requires nothing so far 
+#' 
+#'   
+#' @param IDs vector of IDs/gene names matching the rows and columns of the adjacency matrix
+#' @param adjacency adjancency matrix
+#' @param target ID of the target node
+#' @param adj.CO adjacency cutoff
+#' @param t.module target module, only nodes within this moule are considered if set
+#' @param modules assigned modules to nodes mandatory of t.module is set
+#' @param annot annotation data frame that genes in rows annotations in columns
+#' @param annot.in.node.t column names of annot columns that should end up in the Cytoscape node table file
+#' @param annot.in.edge.t column names of annot columns that should end up in the Cytoscape edge table file
+#' @param annot.id.match.col column name of annot column to be used for annotation matching, defalts to 'gene_id'
+#' @param base.name file  base name for edge and node table files
+#' @param primary.name.col column used populating the name column if this is NA nodeName is used
+#' @param kME Matrix of Eigengene correlations for all genes rownames need to correspond to IDs, colnames to modules. If set includes Eigenegenes with abs kME > edj.CO 
+#' @param exon.count.CO cutoff from max exons gene, if provided nodes with less exons are discarded
+#' @param ignore.exon.xount.protein.coding ignore exon count cutoff for protein coding genes requires annot to contain a column gene_biotype
+#' @param edge.weight.transform.exp exponent for transforming edge weight, sign is maintained 
+#' @param pos.adj.only only report interactions where the adjacency >= adj.CO, if false abs (adjacency) > = adj.CO nodes and edges are returned, useful when adjacency is actually a signed measure like correlation 
+#' @examples 
+#' subNet2Cytoscape (target='segemehl_XLOC_068379',t.module='thistle', IDs=colnames (datExpr),adjacency=adjacency,
+#' adj.CO=0.7, modules=mergedColors, annot=annot, annot.in.node.t=c('gene_biotype','max_exons_gene', 'AID'), 
+#' annot.in.col.t=c(), annot.id.match.col='gene_id', primary.name.col='hgnc_symbol', kME=kmE.signed
+#' base.name='WGCNA-08b-XLOC_089379')
+#' 
+#' 
+subNet2Cytoscape  <- function (target,t.module=NULL, IDs,adjacency,adj.CO, exon.count.CO=NULL, modules, annot, annot.in.node.t, annot.in.col.t, 
+                               annot.id.match.col='gene_id', primary.name.col='hgnc_symbol', base.name, kME=NULL, ignore.exon.count.protein.coding=F,
+                               edge.weight.transform.exp=5, pos.adj.only=T, debug=0, fixed_n = 0) {
+  if (!is.null (t.module) && is.null (modules)) {
+    stop ('Modules must not be NULL if t.module is given')
+  }
+  
+  target.idx <- match (target, IDs)
+  
+  ## Selection based on adj.CO
+  if (fixed_n != 0){
+    diag(adjacency) <- NA
+    sel.node <- adjacency [target.idx, ]
+    sel.node<- sort(sel.node, decreasing = T)[1:fixed_n]
+    # sel.node <- as.logical(sel.node, target.idx)
+    sel.node.idx <-as.logical(rownames(adjacency) %in% names(sel.node)+ rownames(adjacency) %in% target)
+  } else {
+    if (pos.adj.only==T) {
+      sel.node.idx <- adjacency [target.idx, ]>= adj.CO
+    }
+    else {
+      sel.node.idx <- abs(adjacency [target.idx, ]) >= adj.CO   
+    }}
+  
+  ## Selection based on module memebership
+  if (!is.null (t.module)) {
+    sel.node.idx <- sel.node.idx & modules %in% c(t.module)
+  }
+  
+  ## Selection based on exon count
+  if (!is.null (exon.count.CO)) {
+    if (is.null (annot) | ! 'max_exons_gene' %in% colnames (annot)) {
+      stop('If exon.count.CO is set, annot must be provided and contain a max_exons_gene column!')
+    }
+    if (ignore.exon.count.protein.coding==T) {
+      if ('gene_biotype' %in% colnames (annot)) {
+        sel.node.idx <- sel.node.idx & (annot[match (IDs, annot[,annot.id.match.col]),'max_exons_gene'] > exon.count.CO | 
+                                          annot[match (IDs, annot[,annot.id.match.col]),'gene_biotype']=='protein_coding')
+      }
+      else {
+        stop ('annot needs to contain a column gene_biotype to ignore exon count cutoff for protein coding genes!')
+      }
+    }
+    else {
+      sel.node.idx <- sel.node.idx & annot[match (IDs, annot[,annot.id.match.col]),'max_exons_gene'] > exon.count.CO
+    }
+  }
+  
+  sel.node.idx <- which (sel.node.idx)
+  
+  node.table=data.frame (nodeName=IDs[sel.node.idx])
+  ## columns to add to node table
+  if (!is.null (annot.in.node.t)) {
+    cols <- match (annot.in.node.t, colnames (annot))
+    if (length (which (is.na(cols))) > 0) {
+      stop (paste ('annot.in.node.t argument(s) ', which (is.na(cols)), ' do not match colnames in annot table!', sep="", collapse="," ))
+    }
+    #cols <- which (cols)
+  }
+  if (!is.null (annot)) {
+    if (length (which (is.na(match (annot.id.match.col, colnames (annot))))) > 0) {
+      stop (paste ('annot.id.match.col=', annot.id.match.col, ' does not match any column name in annot!', sep=''))
+    }
+    node.table  <- cbind (node.table, annot [match (node.table$nodeName, annot[,annot.id.match.col]), cols])
+  }
+  ## Generate a name column that contains either the symbol 
+  if (debug > 0) message ('Constructing node table')
+  node.table$pname  <- annot [match (node.table$nodeName, annot[,annot.id.match.col]),primary.name.col]
+  node.table$pname[is.na(node.table$pname) | is.null (node.table$pname) | node.table$pname==""] <- 
+    node.table$nodeName[is.na(node.table$pname) | is.null (node.table$pname) | node.table$pname==""]
+  ## Add moduel informatoin if available
+  if (!is.null(modules)) {
+    node.table$module <- modules[sel.node.idx]
+  }
+  ## Add a column type to discriminate genes from modules 
+  node.table$type='gene'
+  
+  ## Make some corrections to NA entries in tables
+  if ('gene_biotype' %in% colnames (node.table)) {
+    node.table$gene_biotype [is.na(node.table$gene_biotype)]  <- 'XLOC'
+  }
+  
+  ## if kME is provided, add eigengene correlation for the selected nodes 
+  if (! is.null (kME)) {
+    tmp.table  <- matrix (nrow=dim (kME)[2], ncol=dim (node.table)[2], data=NA)
+    #message (paste ('dim tmp table:', unlist(dim(tmp.table)),sep="", collapse=","))
+    colnames (tmp.table) <- colnames (node.table)
+    tmp.table <- as.data.frame (tmp.table)
+    tmp.table$nodeName=colnames(kME)
+    tmp.table$pname <- colnames(kME)
+    tmp.table$type='module'
+    tmp.table  <- tmp.table [apply (kME[sel.node.idx,], 2, function(x) {sum (as.numeric (abs(x)> adj.CO))>0}),]
+    node.table=rbind (node.table, tmp.table)
+  }
+  if (debug > 0) message ('Finished node table')
+  
+  ### Edge table
+  if (debug > 0) message ('Constructing edge table')
+  
+  
+  
+  edge.table  <-  melt (adjacency[sel.node.idx, sel.node.idx], value.name='adjacency',  id.vars=c())
+  colnames (edge.table)=c('fromNode', 'toNode','adjacency')
+  ## Remove former diagonal elements
+  message ('Removing diagnonal elements from edge table')
+  edge.table <- edge.table[edge.table$fromNode!=edge.table$toNode,]
+  
+  
+  ## Remove adges with adjacency below cutoff
+  if (pos.adj.only==T) {
+    edge.table  <- edge.table[edge.table$adjacency >= adj.CO,]
+  }
+  else {
+    edge.table  <- edge.table[abs(edge.table$adjacency) >= adj.CO,] 
+  }
+  
+  # if(fixed_n != 0){
+  #   edge.table <- edge.table %>% arrange(desc(adjacency)) %>%
+  #     dplyr::slice(1:fixed_n)
+  # }
+  ## Add edges to Eigengenes, if kME has been provided
+  if (! is.null (kME)) {
+    edge.tmp  <- melt (cbind (row.names(kME[sel.node.idx, ]), kME[sel.node.idx,]), value.name='adjacency', id.vars=c(1))
+    colnames (edge.tmp)=c('fromNode', 'toNode','adjacency')
+    edge.tmp <- edge.tmp[abs(edge.tmp$adjacency) >= adj.CO,]
+    edge.table <- rbind (edge.table, edge.tmp)
+  }
+  ## Transform edge weight and provide unsigned weight
+  edge.table$abs.adjacency <- abs(edge.table$adjacency)
+  edge.table$transf.adjacency  <- sign (edge.table$adjacency) * abs (edge.table$adjacency)^edge.weight.transform.exp
+  edge.table$abs.transf.adjacency  <-  abs (edge.table$adjacency)^edge.weight.transform.exp
+  message ('Finished edge table')
+  ## write node and edge table 
+  write.table (node.table, file=paste(csvs, base.name, "-Cytoscape-nodes.csv", sep=""), sep="\t", quote=F,row.names=F)
+  write.table (edge.table, file=paste(csvs, base.name , "-Cytoscape-edges.csv",sep=""), sep="\t", quote=F, row.names=F)
+  
+  print(dim(node.table)[1])
+  return(node.table$nodeName)
+}
+
+#' Retrieve or load a biomart table containing the selected Gene_attributes for the provided Gene_IDs
+#' 
+#' @param Gene_IDs        A list of gene IDs for which the biomaRt annotation should be retreived
+#' @param ID_type         the type of the Gene_IDs. Default: "ensembl_gene_id"
+#' @param Gene_attributes A vector of attributes that should be returned. Note that this function will 
+#'                        return a row for the requested gene only if it has a value for ALL attributes!
+#'                        You can retrieve a list of attributes via 'listAttributes(ensembl)' (with a loaded mart!)
+#' @param biomart         Provide your preferred biomaRt web service. You can get a full list via 'listMarts()'
+#' @param dataset         Dataset you want to use. To see the different datasets available within a biomaRt you can 
+#'                        e.g. do: mart = useMart('ensembl'), followed by listDatasets(mart).
+#' @param host            Host to connect to if different then www.biomart.org 
+#' 
+get_biomart_table <- function(Gene_IDs, ID_type, Gene_attributes) {
+  
+  # ids <- gsub("\\.\\d$","", Gene_IDs, perl=TRUE) ## Remove version from gene ids if present
+  
+  myMart <- useMart("ensembl", dataset="hsapiens_gene_ensembl")
+  bmTable <- getBM (attributes = Gene_attributes,
+                    filters = ID_type, 
+                    values = Gene_IDs, 
+                    mart=myMart
+  )
+  return(bmTable)
+}
+
+all_genes <- rownames(cones)
+
+
+annot <- get_biomart_table(Gene_IDs = rownames(cones), ID_type = "hgnc_symbol", Gene_attributes = c('hgnc_symbol', 'description','gene_biotype'))
+save(annot, file = paste0(rdata, '002_Annot_cones_DCA.RData'))
+
+annot <- get_biomart_table(Gene_IDs = rownames(rods), ID_type = "hgnc_symbol", Gene_attributes = c('hgnc_symbol', 'description','gene_biotype'))
+save(annot, file = paste0(rdata, '002_Annot_rods_DCA.RData'))
+
+
+export_genes_cyto <- function(which_dynamic, which_adj, which_annot, target_gene, threshold, which_ntwk, fixed_n){
+  load(which_dynamic)
+  load(which_adj)
+  load(which_annot)
+  
+  geneList <- subNet2Cytoscape (target=target_gene, IDs=all_genes,adjacency=adjacency_complete,
+                                adj.CO=threshold, modules=dynamicColors, annot=annot, annot.in.node.t=c('gene_biotype'), 
+                                annot.in.col.t=c(), annot.id.match.col='hgnc_symbol', primary.name.col='hgnc_symbol',
+                                base.name=paste0('WGCNA-',which_ntwk,'-',target_gene), fixed_n = fixed_n)
+  return(geneList)
+  
+}
+
+
+
+```
+
+## Results
+
+
+```{r data_prep,error=FALSE, warning=FALSE, message=FALSE}
+
+adjacency <-  WGCNA::adjacency(t(cones), type = "signed" , power = 12, corFnc = "bicor")
+adjacency_complete <- adjacency
+save(adjacency_complete, file = paste0(rdata, "001_Adj_cones_DCA.RData" ))
+
+load("/data/bioinf/projects/data/2021_NetworksRetina/RData/02_dynamicColors_DCA_Cones.RData")
+connecVals_cones <- intramodularConnectivity(adjacency, dynamicColors, scaleByMax = FALSE)
+
+adjacency <-  WGCNA::adjacency(t(rods), type = "signed" , power = 12, corFnc = "bicor")
+adjacency_complete <- adjacency
+save(adjacency_complete, file = paste0(rdata, "001_Adj_rods_DCA.RData" ))
+
+
+load("/data/bioinf/projects/data/2021_NetworksRetina/RData/02_dynamicColors_DCA_Rods.RData")
+connecVals_rods <- intramodularConnectivity(adjacency, dynamicColors, scaleByMax = FALSE)
+
+```
+
+```{r}
+
+
+```
+
+```{r calculate, error=FALSE, warning=FALSE, message=FALSE}
+hub_gene_df_cones <- get_top_hubs(datKME_df= datKME_cones, n_hubs=30)
+hub_gene_df_rods <- get_top_hubs(datKME_df= datKME_rods, n_hubs=30)
+all_hubs <- Reduce(intersect, list(unlist(hub_gene_df_cones), unlist(hub_gene_df_rods)))
+
+all_hubs <- all_hubs[all_hubs %in% annot$hgnc_symbol]
+
+
+summary_cones <- list()
+summary_rods <- list()
+intersect_vec <- c()
+Kcones <- c()
+Krods <- c()
+Delta_target_abs <- c()
+Delta_target_norm <- c()
+Delta_whole_network_abs <- c()
+Delta_whole_network_norm <- c()
+jaccard_vec <- c()
+ctrl_jaccard <- c()
+for ( i in 1:length(all_hubs)){
+  cat(paste("Target_gene:", all_hubs[i], "-----------------------------------------------\n"))
+  
+  
+  cones_gene <-export_genes_cyto(which_dynamic= "/data/bioinf/projects/data/2021_NetworksRetina/RData/02_dynamicColors_DCA_Cones.RData", 
+                                 which_adj = paste0(rdata, "001_Adj_cones_DCA.RData"), 
+                                 which_annot = paste0(rdata, '002_Annot_cones_DCA.RData'), 
+                                 target_gene = all_hubs[i], 
+                                 threshold = 0.05, 
+                                 which_ntwk = 'cones', 
+                                 fixed_n = 300)
+  summary_cones[[i]] <- cones_gene
+  
+  k1 <- connecVals_cones[rownames(connecVals_cones) %in% summary_cones[[i]], "kWithin"]
+  Kcones <- c(Kcones, round(mean(k1),2))
+  
+  # 140
+  
+  rods_gene <- export_genes_cyto(which_dynamic= "/data/bioinf/projects/data/2021_NetworksRetina/RData/02_dynamicColors_DCA_Rods.RData", 
+                                 which_adj = paste0(rdata, "001_Adj_rods_DCA.RData"), 
+                                 which_annot = paste0(rdata, '002_Annot_rods_DCA.RData'), 
+                                 target_gene = all_hubs[i], 
+                                 threshold = 0.05, 
+                                 which_ntwk = 'rods', 
+                                 fixed_n = 300)
+  summary_rods[[i]] <- rods_gene
+  
+  k2 <- connecVals_rods[rownames(connecVals_rods) %in% summary_rods[[i]], "kWithin"]
+  # 136
+  
+  Krods <- c(Krods, round(mean(k2),2))
+  
+  Delta_target_abs <- c(Delta_target_abs, abs(round(connecVals_cones[rownames(connecVals_cones) %in% all_hubs,"kWithin"],1)[i] - round(connecVals_rods[rownames(connecVals_rods) %in% all_hubs,"kWithin"],1)[i]))
+  Delta_target_norm <- c(Delta_target_norm, abs((round(connecVals_cones[rownames(connecVals_cones) %in% all_hubs,"kWithin"],1)[i]/max(k1)) - (round(connecVals_rods[rownames(connecVals_rods) %in% all_hubs,"kWithin"],1)[i]/max(k2))))
+  
+  Delta_whole_network_abs <- c(Delta_whole_network_abs, abs(round(mean(k1),2) - round(mean(k2),2)))
+  Delta_whole_network_norm <- c(Delta_whole_network_norm, abs(round(mean(k1),2)/max(k1) - round(mean(k2),2)/max(k2)))
+  
+  cat(paste("Intersect:", length(intersect(cones_gene, rods_gene)), "-----------------------------------------------\n"))
+  intersect_vec <- c(intersect_vec, length(intersect(cones_gene, rods_gene)))
+  # 35
+  
+  df <- data.frame(Genes = union(cones_gene, rods_gene)) 
+  df <- df %>% 
+    mutate(In_cones = ifelse(df$Genes %in% cones_gene, 1, 0)) %>% 
+    mutate(In_rods = ifelse(df$Genes %in% rods_gene, 1, 0))
+  
+  cat(paste("Jaccard:", jaccard(df$In_cones, df$In_rods), "-----------------------------------------------\n"))
+  jaccard_vec <- c(jaccard_vec, round(jaccard(df$In_cones, df$In_rods),2))
+  cat(paste("Control-Jaccard:", length(intersect(cones_gene, rods_gene))/ length(union(cones_gene, rods_gene)), "-----------------------------------------------\n"))
+  ctrl_jaccard <- c(ctrl_jaccard, length(intersect(cones_gene, rods_gene))/ length(union(cones_gene, rods_gene)))
+  
+}
+
+names(summary_cones) <- all_hubs
+names(summary_rods) <- all_hubs
+names(Kcones) <- all_hubs
+names(Krods) <- all_hubs
+names(Delta_target_abs) <- all_hubs
+names(Delta_target_norm) <- all_hubs
+names(Delta_whole_network_abs) <- all_hubs
+names(Delta_whole_network_norm) <- all_hubs
+names(intersect_vec) <- all_hubs
+names(jaccard_vec)  <- all_hubs
+names(ctrl_jaccard)  <- all_hubs
+
+```
+
+
+
+```{r datatable}
+tissue_info <- read.table('/work/steinheu/tissue_category_rna_retina_Tissue.tsv', sep = '\t', header = T)
+
+df <- annot[annot$hgnc_symbol %in% all_hubs,]
+# reorder rows by the order of the all_hubs vector
+rownames(df) <- df$hgnc_symbol
+df <- df[all_hubs,]
+df$'Gene included in human protein atlas list?' <- ifelse(all_hubs %in% tissue_info$Gene, "yes", "no")
+df$'K Target Gene in Cones(kWithin)' <- round(connecVals_cones[rownames(connecVals_cones) %in% all_hubs,"kWithin"],1)
+df$'K Target Gene in Rods(kWithin)' <- round(connecVals_rods[rownames(connecVals_rods) %in% all_hubs,"kWithin"],1)
+df$'Delta K Target (absolute)' <- Delta_target_abs
+df$'Delta K Target (norm)' <- Delta_target_norm
+df$'K Target NTWK from Cones(Mean(kWithin))' <- Kcones
+df$'K Target NTWK from Rods(Mean(kWithin))' <- Krods
+df$'Delta K NTWK (absolute)' <-Delta_whole_network_abs
+df$'Delta K NTWK (norm)' <-Delta_whole_network_norm
+df$'Intersect' <- intersect_vec
+df$'Tanimoto Similarity' <- jaccard_vec
+
+datatable(df)
+
+
+```
+
+```{r save_data, error=FALSE, warning=FALSE, message=FALSE}
+save(df, file = paste0(rdata, '001_Final_df_jaccard.RData'))
+
+df %>% dplyr::select(c("hgnc_symbol","K Target Gene in Cones(kWithin)", "K Target Gene in Rods(kWithin)", "Intersect", "Tanimoto Similarity" )) %>% arrange(Intersect) %>% xtable()
+
+melt(summary_cones) %>% set_colnames(c("Ntwk", "Target"))  %>% write_csv(path = paste0(csvs, "Summary_NTWK_cones.csv"))
+melt(summary_rods) %>% set_colnames(c("Ntwk", "Target"))  %>% write_csv(path = paste0(csvs, "Summary_NTWK_rods.csv"))
+
+```
+
+Where are the preserved hubs located?
+```{r}
+# Cones
+# black        blue       brown       green greenyellow         red   turquoise      yellow 
+#   6           1           1           1          17           5           5           1 
+# Rods
+# blue     brown     green      pink    purple       red turquoise    yellow 
+#  17         7         1         1         5         1         4         1 
+
+```
+
+It appear that most from teh cone ntwk are located in the greenyellow module and from the Rod ntwk in the blue module.
+
+
+# EIF4EBP1
+Min jaccard
+```{r}
+cones_gene <-export_genes_cyto(which_dynamic= "/work/steinheu/2021_NetworksFromRetina/RData/02_dynamicColors_DCA_Cones.RData", 
+                               which_adj = paste0(rdata, "001_Adj_cones_DCA.RData"), 
+                               which_annot = paste0(rdata, '002_Annot_cones_DCA.RData'), 
+                               target_gene = 'EIF4EBP1',
+                               threshold = 0.05, 
+                               which_ntwk = 'cones', 
+                               fixed_n = 30)
+
+rods_gene <- export_genes_cyto(which_dynamic= "/work/steinheu/2021_NetworksFromRetina/RData/02_dynamicColors_DCA_Rods.RData", 
+                               which_adj = paste0(rdata, "001_Adj_rods_DCA.RData"), 
+                               which_annot = paste0(rdata, '002_Annot_rods_DCA.RData'), 
+                               target_gene = 'EIF4EBP1',
+                               threshold = 0.05, 
+                               which_ntwk = 'rods', 
+                               fixed_n = 30)
+
+cat(paste("Intersect between both small networks:", length(intersect(cones_gene, rods_gene)),"---------------------------------"))
+```
+
+

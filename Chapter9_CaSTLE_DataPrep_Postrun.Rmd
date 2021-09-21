@@ -1,0 +1,430 @@
+---
+title: "CaSTLe transfer learning schROHT"
+author: "Lisa"
+date: "May 27, 2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages, message=F}
+# if (!requireNamespace("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# 
+# BiocManager::install("SingleCellExperiment")
+# 
+# 
+# BiocManager::install("scater")
+# 
+
+library(SingleCellExperiment)
+library(scater)  # tested on version 1.6.3,    install from Bioconductor: source("https://bioconductor.org/biocLite.R"); biocLite("scater")
+library(xgboost) # tested on version 0.6.4.1, install from CRAN: install.packages("xgboost")
+library(igraph)  # tested on version 1.2.1,   install from CRAN: install.packages("igraph")
+library(caret)
+library(e1071)
+library(tidyverse)
+library(magrittr)
+library(ggplot2)
+library(reshape2)
+```
+
+# Parameters and directories
+
+```{r parameters_functions}
+
+# Parameters used for CaSTLe run
+#-----------------------------------------------------------------------------------------#
+
+BREAKS=c(-1, 0, 1, 6, Inf)
+nFeatures = 100
+
+
+# Functions
+#-----------------------------------------------------------------------------------------#
+
+#' Visualize the training stats from the xgboost training section
+#' Plots a line plot showing Sensitivity and Specificity
+#' over every cell type from Cowan paper.
+#' The plot is sorted by Sensitivity and Specificity
+#'
+#' @param input_df dataframe of melted confusion matrix
+#' @param raw_df dataframe where [,1] is true label and [,2] is predicted label
+#' @param which_sample chr, name of data used for plotting and saving
+#'
+#' @return ggplot object
+#' 
+#' @examples visual_Training_stats(input_df = df, 
+#'                            raw_df = eval_df, 
+#'                            which_sample = "Control2")
+
+visual_Training_stats <- function(input_df, raw_df, which_sample){
+  p <- input_df %>%
+    mutate(Celltype = fct_reorder(Celltype, value)) %>%
+    ggplot(aes(x = Celltype, y = value, colour = Measure, group = Measure)) +
+    geom_point(size = 1.5) +
+    geom_line(size = 1.5) +
+    theme_bw(base_size = 26) +
+    coord_cartesian(ylim = c(0,1)) +
+    scale_y_continuous(breaks=c(0,0.5,1)) +
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+    theme(axis.text.x = element_text(angle = 60, hjust = 1, vjust = 1),
+          legend.position="bottom") +
+    ylab("")
+    # Plot labeling
+    # labs(title = paste("Evaluating the xgboost from HRO", which_sample),
+    #      subtitle = "20% held out data from Cowan paper",
+    #      caption = paste(dim(raw_df)[1],"cells"))
+  
+  ggsave(file = paste0(results,"R_01_Eval_xgboost_",which_sample,".pdf"), 
+         width = 10, 
+         height= 6,
+         plot = p, 
+         device = "pdf", 
+         limitsize = FALSE)
+  
+  return(p)
+}
+
+
+analyze_CaSTLe_run <- function(eval_data, cellname_vec, annot_data, data_type, control_data){
+  # 9.2 Evaluate classifyer 
+  load(eval_data)
+  x <- load(cellname_vec)
+  new_celltypes <- get(x)
+  
+  conf_data <- confusionMatrix(data = as.factor(eval_df$pred_labels), 
+                               reference = as.factor(eval_df$true_labels))
+  # 
+  # if(length(as.character(levels(new_celltypes)))- length(rownames(conf_data$byClass)) == 0){
+  dic <- as.character(levels(new_celltypes)[c(as.numeric(gsub(rownames(conf_data$byClass), pattern = "Class: ", replacement = ""))+1)])
+  rownames(conf_data$byClass) <- dic
+  # print(conf_data$byClass)
+  # } else {
+  #   print("Some cell type was not classifiable! Please check!")
+  #   break
+  # }
+  
+  df <- melt(conf_data$byClass[,1:2]) %>%
+    set_colnames(c("Celltype", "Measure","value"))
+  
+  
+  p <- visual_Training_stats(input_df = df, 
+                             raw_df = eval_df, 
+                             which_sample = paste0(control_data, "_", data_type))
+  
+  print(p)
+  
+  # Load predicted vector
+  load(annot_data)
+  
+  # Create the 'dictionary' with the initial facor levels
+  dic <- as.character(levels(new_celltypes))
+  
+  # For each entry in the predicted Vector, take the value
+  # plus one and look in the dictionary and replace the value
+  for(i in 1:length(predictedClasses)) {
+    predictedClasses[i] <- dic[as.numeric(predictedClasses[i])+1]}
+  
+  print(table(predictedClasses))
+  
+  save(predictedClasses, file = paste0(rdata,"CaSTLe_Annot_output_",paste0(control_data, "_", data_type),"_cellnames.RData"))
+  write.csv(predictedClasses, file = paste0(csvs,"CaSTLe_Annot_output_",paste0(control_data, "_", data_type),"_cellnames.csv"))
+  print(xtable(table(predictedClasses)))
+  
+  svg(paste0(results,"R_02_Distr_",paste0(control_data, "_", data_type),".svg"), width = 6, height = 4)
+  
+  plt <- as.data.frame(table(predictedClasses)) %>% 
+    mutate(proc= round(Freq *100 / sum(Freq),2)) %>%
+    # mutate(ordered_CT = fct_reorder(predictedClasses, proc)) %>%
+    ggplot(aes(x = predictedClasses, y= proc)) + 
+    geom_bar(stat="identity") +
+    theme_bw(base_size = 18) +
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+    theme(axis.text.x = element_text(angle = 60, hjust = 1, vjust = 1)) +
+    coord_cartesian(ylim = c(0,45)) +
+    # Plot labeling
+    # labs(title = "Distribution of annotated cell types",
+    #      subtitle = paste("HRO ",control_data," after CaSTLe;", data_type)) +
+    ylab("Percent (%)") + 
+    xlab("Celltype")
+  
+  print(plt)
+  
+  dev.off()
+  
+  print(plt)
+  
+}
+
+```
+
+```{r dirs}
+dir <- "/data/bioinf/projects/data/2019_schROHT/2021_CaSTLeAnnot/"
+input <- paste0(dir,"input/")
+rdata <- paste0(dir,"RData/")
+results <- paste0(dir,"results/")
+csvs <- paste0(dir, "csvs/")
+```
+
+# Preprocessing
+## Generating the SingleCellExperiment data sets
+### The Cowan data
+
+```{r read_in_expr_cowan,eval=F, echo=T}
+expression_data <- read_tsv(paste0(input, "exprMatrix.tsv"))
+expression_data$gene <- gsub(expression_data$gene, pattern = "\\|.*", replacement = "")
+rownames(expression_data) <- expression_data$gene
+expression_data <- as.data.frame(expression_data[,-1])
+```
+
+```{r read_in_meta_cowan}
+meta <- read.table(paste0(input,"meta.tsv"),sep = '\t', header = TRUE)
+celltypes <- as.character(meta$cell_type)
+meta$new_celltypes <- as.factor(ifelse(startsWith(celltypes, "AC_B_"), "AC_B", 
+                                  ifelse(startsWith(celltypes, "CdBC_"), "CdBC", 
+                                         ifelse(startsWith(celltypes,"ChBC"), "ChBC", 
+                                                ifelse(startsWith(celltypes,"MC_"), "MC", 
+                                                       ifelse(endsWith(celltypes,"cone"), "cones", 
+                                                              ifelse(startsWith(celltypes, "AC_Y"), "AC_Y", celltypes)))))))
+exclude_ct <- c("37-","38-","5-" )
+
+cellID_noNum <- meta[!(meta$new_celltypes %in% exclude_ct),"cell_id"]
+
+annotation <- droplevels(meta[meta$cell_id %in% cellID_noNum,"new_celltypes"])
+
+expression_data <- expression_data[,colnames(expression_data) %in% cellID_noNum]
+
+save(annotation, file = paste0(rdata, "01_Compressed_CellTypes.RData"))
+```
+
+
+```{r sce_cowan,eval=F, echo=T}
+sceset <- SingleCellExperiment(assays = list(counts = as.matrix(expression_data)), 
+                               colData = annotation, rowData = rownames(expression_data))
+exprs(sceset) <- log2(calculateCPM(sceset ,use_size_factors = FALSE) + 1)
+# use gene names as feature symbols
+rownames(sceset) <- rownames(expression_data)
+rowData(sceset)$feature_symbol <- rownames(sceset)
+# remove features with duplicated names
+
+isSpike(sceset, "ERCC") <- grepl("^ERCC-", rownames(sceset))
+sceset <- calculateQCMetrics(sceset, feature_controls = list("ERCC" = isSpike(sceset, "ERCC")))
+
+
+saveRDS(sceset, file = paste0(rdata,"01_Roska_RefData.rds"))
+rm(expression_data,sceset)
+```
+
+## Foveal Cowan
+
+```{r}
+
+expression_data <- read_tsv("/data/bioinf/projects/data/2019_schROHT/2021_Foveal_Peripheral_R/Roska_data/input/Foveal_exprMatrix.tsv")
+expression_data$gene <- gsub(expression_data$gene, pattern = "\\|.*", replacement = "")
+rownames(expression_data) <- expression_data$gene
+expression_data <- as.data.frame(expression_data[,-1])
+
+meta <- read.table("/data/bioinf/projects/data/2019_schROHT/2021_Foveal_Peripheral_R/Roska_data/input/Foveal_meta.tsv",sep = '\t', header = TRUE)
+celltypes <- as.character(meta$cell_type)
+meta$new_celltypes <- as.factor(ifelse(startsWith(celltypes, "AC_B_"), "AC_B", 
+                                  ifelse(startsWith(celltypes, "CdBC_"), "CdBC", 
+                                         ifelse(startsWith(celltypes,"ChBC"), "ChBC", 
+                                                ifelse(startsWith(celltypes, "AC_Y"), "AC_Y", 
+                                                       ifelse(startsWith(celltypes,"END_"), "END", 
+                                                              ifelse(startsWith(celltypes,"MC_"), "MC", 
+                                                                     ifelse(startsWith(celltypes,"HC_"), "HC", 
+                                                                            ifelse(startsWith(celltypes,"GC_"), "GC", 
+                                                                            ifelse(endsWith(celltypes,"cone"), "cones", 
+                                                                            ifelse(startsWith(celltypes,"MO_"), "MO", celltypes)))))))))))
+
+# save(new_celltypes, file = paste0(rdata, "01_Compressed_CellTypes_foveal.RData"))
+
+immune_cells <- c("MAST", "NK", "TCell", "MO")
+cellID_noImmune <- meta[!(meta$new_celltypes %in% immune_cells),"cell_id"]
+
+annotation <- droplevels(meta[meta$cell_id %in% cellID_noImmune,"new_celltypes"])
+
+expression_data <- expression_data[,colnames(expression_data) %in% cellID_noImmune]
+
+save(annotation, file = paste0(rdata, "01_Compressed_CellTypes_foveal.RData"))
+
+
+sceset <- SingleCellExperiment(assays = list(counts = as.matrix(expression_data)), 
+                               colData = annotation, rowData = rownames(expression_data))
+exprs(sceset) <- log2(calculateCPM(sceset ,use_size_factors = FALSE) + 1)
+# use gene names as feature symbols
+rownames(sceset) <- expression_data$gene
+rowData(sceset)$feature_symbol <- rownames(sceset)
+# remove features with duplicated names
+
+isSpike(sceset, "ERCC") <- grepl("^ERCC-", rownames(sceset))
+sceset <- calculateQCMetrics(sceset, feature_controls = list("ERCC" = isSpike(sceset, "ERCC")))
+
+
+saveRDS(sceset, file = paste0(rdata,"01_Roska_RefData_Foveal_adult.rds"))
+rm(expression_data,sceset)
+
+```
+
+## Peripheral Cowan
+
+```{r}
+
+expression_data <- read_tsv("/data/bioinf/projects/data/2019_schROHT/2021_Foveal_Peripheral_R/Roska_data/input/Peripheral_exprMatrix.tsv")
+expression_data$gene <- gsub(expression_data$gene, pattern = "\\|.*", replacement = "")
+rownames(expression_data) <- expression_data$gene
+expression_data <- as.data.frame(expression_data[,-1])
+
+meta <- read.table("/data/bioinf/projects/data/2019_schROHT/2021_Foveal_Peripheral_R/Roska_data/input/Peripheral_meta.tsv",sep = '\t', header = TRUE)
+celltypes <- as.character(meta$cell_type)
+new_celltypes <- as.factor(ifelse(startsWith(celltypes, "AC_B_"), "AC_B", 
+                                  ifelse(startsWith(celltypes, "CdBC_"), "CdBC", 
+                                         ifelse(startsWith(celltypes,"ChBC"), "ChBC", 
+                                                ifelse(startsWith(celltypes, "AC_Y"), "AC_Y", 
+                                                       ifelse(startsWith(celltypes,"END_"), "END", 
+                                                              ifelse(startsWith(celltypes,"MC_"), "MC", 
+                                                                     ifelse(startsWith(celltypes,"HC_"), "HC", 
+                                                                            ifelse(startsWith(celltypes,"GC_"), "GC", 
+                                                                            ifelse(endsWith(celltypes,"cone"), "cones", 
+                                                                                   ifelse(startsWith(celltypes,"FB_"), "FB", 
+                                                                            ifelse(startsWith(celltypes,"MO_"), "MO", celltypes))))))))))))
+
+immune_cells <- c("MAST", "NK", "TCell", "MO")
+cellID_noImmune <- meta[!(meta$new_celltypes %in% immune_cells),"cell_id"]
+
+annotation <- droplevels(meta[meta$cell_id %in% cellID_noImmune,"new_celltypes"])
+
+expression_data <- expression_data[,colnames(expression_data) %in% cellID_noImmune]
+
+save(annotation, file = paste0(rdata, "01_Compressed_CellTypes_peri.RData"))
+
+sceset <- SingleCellExperiment(assays = list(counts = as.matrix(expression_data)), 
+                               colData = annotation, rowData = rownames(expression_data))
+exprs(sceset) <- log2(calculateCPM(sceset ,use_size_factors = FALSE) + 1)
+# use gene names as feature symbols
+rownames(sceset) <- expression_data$gene
+rowData(sceset)$feature_symbol <- rownames(sceset)
+# remove features with duplicated names
+
+isSpike(sceset, "ERCC") <- grepl("^ERCC-", rownames(sceset))
+sceset <- calculateQCMetrics(sceset, feature_controls = list("ERCC" = isSpike(sceset, "ERCC")))
+
+
+saveRDS(sceset, file = paste0(rdata,"01_Roska_RefData_Peri_adult.rds"))
+rm(expression_data,sceset)
+
+```
+
+
+## The HRO Control 2 data set
+
+```{r rean_sce_ctrl2,eval=F, echo=T}
+HRO_Control2 <- read.csv('/data/bioinf/projects/data/2019_schROHT/2021_Foveal_Peripheral_R/csvs/Count_data_schROHT_Control2.csv',row.names = 1)
+HRO_sceset <- SingleCellExperiment(assays = list(counts = as.matrix(t(HRO_Control2))),
+                                   rowData = colnames(HRO_Control2))
+
+# in hemberg lab code --> use.size.factors
+exprs(HRO_sceset) <- log2(calculateCPM(HRO_sceset,use_size_factors = FALSE) + 1)
+# use gene names as feature symbols
+rowData(HRO_sceset)$feature_symbol <- rownames(HRO_sceset)
+# remove features with duplicated names
+
+isSpike(HRO_sceset, "ERCC") <- grepl("^ERCC-", rownames(HRO_sceset))
+HRO_sceset <- calculateQCMetrics(HRO_sceset, feature_controls = list("ERCC" = isSpike(HRO_sceset, "ERCC")))
+
+
+saveRDS(HRO_sceset, file = paste0(rdata,"01_HRO_TestData.rds"))
+rm(HRO_Control2,HRO_sceset)
+```
+
+## The HRO Control 3 data set
+
+```{r rean_sce_ctrl3,eval=F, echo=T}
+HRO_Control3 <- read.csv('/data/bioinf/projects/data/2019_schROHT/2021_Foveal_Peripheral_R/csvs/Count_data_schROHT_Control3.csv',row.names = 1)
+HRO3_sceset <- SingleCellExperiment(assays = list(counts = t(as.matrix(HRO_Control3))),
+                                    rowData = colnames(HRO_Control3))
+
+# in hemberg lab code --> use.size.factors
+exprs(HRO3_sceset) <- log2(calculateCPM(HRO3_sceset,use_size_factors = FALSE) + 1)
+# use gene names as feature symbols
+rowData(HRO3_sceset)$feature_symbol <- rownames(HRO3_sceset)
+# remove features with duplicated names
+
+isSpike(HRO3_sceset, "ERCC") <- grepl("^ERCC-", rownames(HRO3_sceset))
+HRO3_sceset <- calculateQCMetrics(HRO3_sceset, feature_controls = list("ERCC" = isSpike(HRO3_sceset, "ERCC")))
+
+
+saveRDS(HRO3_sceset, file = paste0(rdata,"01_HRO_Control3_TestData.rds"))
+
+rm(HRO_Control3,HRO3_sceset)
+```
+
+Before runing CaSTLe please ensure that the rownames are included in the SCE data sets, otherwise no gene overlap can be calculated
+
+The actual CaSTLe classification is run using individual script on EVE due to the data set size of the Cowan data.
+
+# Post-processing
+
+## Infer Training performance per celltype from Cowan data set
+
+
+```{r eval_train_2}
+analyze_CaSTLe_run(eval_data = paste0(rdata, "CaSTLe_Eval_DF_Control2_run_Organoid.RData"), 
+                   cellname_vec = paste0(rdata, "01_Compressed_CellTypes.RData"), 
+                   annot_data = paste0(rdata,"CaSTLe_Annot_output_Control2_Organoid.RData"),
+                   data_type = "Organoid", 
+                   control_data = "Control_2")
+```
+
+```{r plot_train_2, fig.width=15, fig.height=10}
+analyze_CaSTLe_run(eval_data = paste0(rdata, "CaSTLe_Eval_DF_Control2_run_Foveal_adult.RData"), 
+                   cellname_vec = paste0(rdata, "01_Compressed_CellTypes_foveal.RData"), 
+                   annot_data = paste0(rdata,"CaSTLe_Annot_output_Control2_Foveal_adult.RData"),
+                   data_type = "Foveal", 
+                   control_data = "Control_2")
+
+```
+
+```{r translate_train_2}
+analyze_CaSTLe_run(eval_data = paste0(rdata, "CaSTLe_Eval_DF_Control2_run_Peri_adult.RData"), 
+                   cellname_vec = paste0(rdata, "01_Compressed_CellTypes_peri.RData"), 
+                   annot_data = paste0(rdata,"CaSTLe_Annot_output_Control2_Peri_adult.RData"),
+                   data_type = "Peri", 
+                   control_data = "Control_2")
+
+
+```
+
+
+
+### HRO Control 3
+
+```{r eval_train_2}
+analyze_CaSTLe_run(eval_data = paste0(rdata, "CaSTLe_Eval_DF_Control3_run_Organoid.RData"), 
+                   cellname_vec = paste0(rdata, "01_Compressed_CellTypes.RData"), 
+                   annot_data = paste0(rdata,"CaSTLe_Annot_output_Control3_Organoid.RData"),
+                   data_type = "Organoid", 
+                   control_data = "Control_3")
+```
+
+```{r plot_train_2, fig.width=15, fig.height=10}
+analyze_CaSTLe_run(eval_data = paste0(rdata, "CaSTLe_Eval_DF_Control3_run_Foveal_adult.RData"), 
+                   cellname_vec = paste0(rdata, "01_Compressed_CellTypes_foveal.RData"), 
+                   annot_data = paste0(rdata,"CaSTLe_Annot_output_Control3_Foveal_adult.RData"),
+                   data_type = "Foveal", 
+                   control_data = "Control_3")
+
+```
+
+```{r translate_train_2}
+analyze_CaSTLe_run(eval_data = paste0(rdata, "CaSTLe_Eval_DF_Control3_run_Peri_adult.RData"), 
+                   cellname_vec = paste0(rdata, "01_Compressed_CellTypes_peri.RData"), 
+                   annot_data = paste0(rdata,"CaSTLe_Annot_output_Control3_Peri_adult.RData"),
+                   data_type = "Peri", 
+                   control_data = "Control_3")
+
+
+```

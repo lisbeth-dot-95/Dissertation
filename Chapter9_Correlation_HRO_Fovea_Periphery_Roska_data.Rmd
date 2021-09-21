@@ -1,0 +1,418 @@
+---
+title: "Untitled"
+author: "Lisa"
+date: "October 14, 2020"
+output: html_document
+-
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Information
+- Paper : https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6596422/
+- Human peripheral and foveal cells sequenced
+
+# Data set up 
+```{r}
+
+input <- "/data/bioinf/projects/data/2019_schROHT/2021_Foveal_Peripheral_R/Roska_data/input/"
+rdata <- "/data/bioinf/projects/data/2019_schROHT/2021_Foveal_Peripheral_R/Roska_data/RData/"
+results <- "/data/bioinf/projects/data/2019_schROHT/2021_Foveal_Peripheral_R/Roska_data/results/"
+project <- "Roska_Retina"
+
+# The data was retrieved from: https://data.iob.ch/
+```
+
+# Functions
+
+```{r}
+library("tidyverse")
+library("rhdf5")
+library("plyr")
+library('data.frame')
+
+theme_basic2 <- function() {
+  theme_bw(base_size = 15) +
+    theme(strip.background = element_blank(),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank())
+}
+
+PreprocessRetinaData <- function(data_name){
+  setwd(input)
+  mat <- fread(paste0(data_name,"_exprMatrix.tsv"), header = T)
+  meta <- read.table(paste0(data_name,"_meta.tsv"), header=T, sep="\t", as.is=T, row.names=1)
+  genes = mat[,1][[1]]
+  genes = gsub(".+[|]", "", genes)
+  mat = data.frame(mat[,-1], row.names=genes)
+  colnames(mat) <- rownames(meta)
+  annot <- as.data.frame(t(mat))
+  rm(mat)
+  annot$CellType <- meta$cell_type
+  annot$Donor <- meta$subject
+  for (i in unique(meta$subject)){
+    annot_sub <- annot %>% filter(Donor == i) %>% select(-Donor)
+    means_Rods_data <<- SubsampleCelltype(data_input = annot_sub,
+                                          celltype = 'rod')
+    write.table(means_Rods_data, file = paste0(rdata, "01_", project, "_MeansRods_", data_name, "_", i ,".tsv"), sep = "\t", dec = ",")
+    means_Cones_data <<- SubsampleCelltype(data_input = annot_sub,
+                                           celltype = 'cone')
+    write.table(means_Cones_data, file = paste0(rdata, "01_", project, "_MeansCones_", data_name,"_", i , ".tsv"), sep = "\t", dec = ",")
+    means_MG_data <<- SubsampleCelltype(data_input = annot_sub,
+                                        celltype = 'MG')
+    write.table(means_MG_data, file = paste0(rdata, "01_", project, "_MeansMuller-Glia_", data_name,"_", i , ".tsv"), sep = "\t" , dec = ",")
+  }
+  rm(annot)
+}
+
+SubsampleCelltype <- function(data_input, celltype){
+  if (celltype == 'cone'){
+    Subsampled_df <- data_input %>%
+      filter(CellType == "L/M cone" | CellType == "S cone") %>%
+      select(-CellType)
+  } else if (celltype == 'MG'){
+    Subsampled_df <- data_input %>%
+      filter(CellType == "MC_01") %>%
+      select(-CellType)
+  } else {Subsampled_df <- data_input %>%
+    filter(CellType == celltype) %>%
+    select(-CellType)}
+  means_Subsampled_df <<- data.frame("Genes" = colnames(Subsampled_df),
+                                     "GeneMean" = colMeans(Subsampled_df))
+}
+
+Calculate_correlation <- function(data_type, intersect, sc_data, pattern_data){
+  # Preparation of data
+  files <- list.files(path=rdata, pattern = pattern_data)
+  for(i in 1:length(files)){
+    means_data <- read.table(paste0(rdata,files[i]), sep = "\t", row.names = 1, dec = ",")
+    means_filtered <- means_data[intersect,]
+    if (i ==1){
+      combined <- means_filtered
+    } else {
+      combined <- cbind(combined, means_filtered$GeneMean)
+    }
+  }
+  combined <- combined[-1]
+  colnames(combined) <- gsub(files, pattern ="0[0-9]_Roska_Retina_Means|.tsv", replacement = "")
+  print( colnames(combined))
+  combined_sc <<- cbind(combined, t(sc_data[,intersect]))
+  print("Data assembled!")
+  save(combined_sc, file = paste0(rdata, "03_", project, "_CombinedData", data_type,".RData"))
+  print("Starting correlation calculation")
+  # Calculate Correlation
+  correlation_mat <<- cor(combined_sc)
+  save(correlation_mat , file = paste0(rdata, "01_Correlation_", data_type,".RData"))
+}
+
+# Plot_data <- function(data_type, correlation_df, data_included){
+#   if (data_included == "MG"){
+#     svg(paste0(results,"01_",project, "_Correlation_MG_",data_type ,".svg"),
+#         width = 15, height = 8)
+#     p <<-  ggplot(correlation_df %>% filter(Celltype  == "MuellerGlia"),
+#                   aes(x = Retina.type, y = Correlation, group = Retina.type, fill = Groups)) +
+#       geom_violin(trim=FALSE) +
+#       geom_boxplot(width=0.1) +
+#       xlab("Retina type") +
+#       ylab("Correlation") +
+#       theme_basic2() +
+#       theme(axis.text.x=element_blank(),
+#             axis.ticks.x=element_blank()) +
+#       labs(title = "Correlation towards peripheral and foveal retina \n in Mueller Glial cells",
+#            subtitle = paste(data_type," - Annotation based on higher resolution"),
+#            caption = "Mean expression value from Glia cells separately \n
+#                   from foveal and peripheral samples \n
+#                   One group includes samples from three donors") +
+#       scale_fill_manual(values=c("#0000FF", "#6363F3")) 
+#       #scale_color_manual(values=c("#BA2BB2", "#EB59E3", "#13BBC3", "#2EE6EE")) +
+#       #facet_grid(cols = vars(Celltype))
+#     print(p)
+#     dev.off()
+#   } else if (data_included == "R/C") {
+#     svg(paste0(results,"01_",project, "_Correlation_Cones_Rods_",data_type ,".svg"),
+#         width = 15, height = 8)
+#     p <<-  ggplot(correlation_df %>% filter(Celltype  == c("Rods", "Cones")),
+#                   aes(x = Retina.type, y = Correlation, group = Retina.type, fill = Groups)) +
+#       geom_violin(trim=FALSE) +
+#       geom_boxplot(width=0.1) +
+#       xlab("Retina type") +
+#       ylab("Correlation") +
+#       theme_basic2() +
+#       theme(axis.text.x=element_blank(),
+#             axis.ticks.x=element_blank()) +
+#       labs(title = "Correlation towards peripheral and foveal retina \n in Rods and Cones",
+#            subtitle = paste(data_type," - Annotation based on higher resolution"),
+#            caption = "Mean expression value from cones and rods separately \n
+#                   from foveal and peripheral samples \n
+#                   One group includes samples from three donors") +
+#       scale_fill_manual(values=c("#BA2BB2", "#F79CF2", "#0BA8AF", "#9BF4F8")) +
+#       #scale_color_manual(values=c("#BA2BB2", "#EB59E3", "#13BBC3", "#2EE6EE")) +
+#       facet_grid(cols = vars(Celltype))
+#     print(p)
+#     dev.off()}
+# }
+
+# Which cluster corresponds to which cell type --> found in Figure 1 
+# Information stored in "cluster_label"
+# Rods <- c(1,2)
+# Cones <- c(3,4)
+# MG <- c(13:17)
+```
+
+# Read in data
+
+# Analysis
+## schROHT Control 2 sample
+
+```{r}
+# library("rhdf5")
+# 
+# h5ad_file <- paste0(input,"20200713_CTRL_2_Cells_higherResolution_pp.h5ad")
+# 
+# obs <- h5read(h5ad_file, name = "obs")
+
+load('/data/bioinf/projects/data/2019_schROHT/2021_Foveal_Peripheral_R/RData/CaSTLe_Annot_output_Control_2_Organoid_cellnames.RData')
+
+sc_data <- read.csv("/data/bioinf/projects/data/2019_schROHT/2021_Foveal_Peripheral_R/csvs/Count_data_schROHT_Control2.csv", row.names = 1, header = T)
+sc_data_log<- log10(sc_data+1)
+```
+
+### Subsampling Scheetz data
+
+```{r}
+all_files <- c("Foveal", "Peripheral")
+for (i in 1:length(all_files)){
+  PreprocessRetinaData(data_name = all_files[i])
+}
+
+#intersect_genes <- Reduce(intersect,  L_genes)
+intersect_full <- intersect(colnames(sc_data), means_Subsampled_df$Genes)
+
+```
+
+
+### Rods and Cones
+#### Correlation
+
+```{r}
+Calculate_correlation(data_type = "Control2", intersect = intersect_full, sc_data = sc_data_log, pattern_data = "01_Roska_Retina_*")
+
+
+```
+
+### Annotate Louvain clusters according to Master GOI expression
+
+```{r}
+load(paste0(rdata, "01_Correlation_Control2.RData"))
+red_mat <- correlation_mat[-c(1:18), 1:18]
+# rownames(obs) <- obs$index
+cor_louvain <- cbind(red_mat, predictedClasses)
+colnames(cor_louvain) <- c(colnames(red_mat), "Louvain")
+
+cor_louv <- data.frame("Retina type" = as.factor(c(rep(colnames(cor_louvain)[-dim(cor_louvain)[2]], each = dim(cor_louvain)[1]))),
+                       "Correlation" = as.vector(red_mat),
+                       "Celltype"= as.factor(rep(cor_louvain[,dim(cor_louvain)[2]],dim(red_mat)[2])))
+
+
+cor_louv$Celltype <- revalue(cor_louv$Celltype, replace = c("MC" = "Muller-Glia",
+                                                            "cones" = "Cones",
+                             "rod" = "Rods"))
+cor_louv$Groups <- gsub(cor_louv$Retina.type, pattern = "_R-00646_0[1-4]", replacement = "")
+cor_louv$Groups <- gsub(cor_louv$Groups, pattern = "_", replacement = " ")
+cor_louv$Correspondance <- ifelse((gsub(cor_louv$Groups, pattern = " Foveal", replacement = "") == cor_louv$Celltype | 
+                                     gsub(cor_louv$Groups, pattern = " Peripheral", replacement = "") == cor_louv$Celltype) , TRUE,FALSE)
+
+cor_louv$Groups <- gsub(cor_louv$Groups, pattern = "Muller-Glia", replacement = "Müller Glia")
+cor_louv$Celltype <- gsub(cor_louv$Celltype, pattern = "Muller-Glia", replacement = "Müller Glia")
+cor_louv$Groups <- gsub(cor_louv$Groups, pattern = " Foveal", replacement = " fovea")
+cor_louv$Groups <- gsub(cor_louv$Groups, pattern = " Peripheral", replacement = " peripheral")
+cor_louv$Cellname <- rep(rownames(cor_louvain), 18)
+```
+```{r}
+# Heatmap of peripheral and foveal vectors
+pheatmap(correlation_mat[1:12,1:12], col = brewer.pal(9,"Reds"), cluster_rows=FALSE, cluster_cols=FALSE)
+```
+
+### Plot
+
+```{r}
+svg(paste0(results,"01_",project, "_Alt_Figure_Correlation_Control2_CaSTLE.svg"),
+    width = 10, height = 5)
+ggplot(
+  cor_louv %>% filter(Celltype  == "Rods"| Celltype  =="Cones" | Celltype  =="Müller Glia") %>%
+    filter(Correspondance == TRUE),
+  aes(x = Groups, y = Correlation, fill= Groups)) +
+  geom_violin(trim=FALSE) +
+  geom_boxplot(width = 0.1) +
+  coord_cartesian(ylim = c(0,1)) +
+  xlab("Retina type") +
+  ylab("Correlation") +
+  theme_basic2() +
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.title.x=element_blank(),
+        text=element_text(size=20),
+        legend.position="bottom") +
+  # labs(title = "Correlation of schROHT photoreceptors and MG cells \n towards peripheral and foveal reference data",
+  #      subtitle = paste("Control 2"," - Annotation based on higher resolution"),
+  #      caption = expression(paste("Reference data taken from Voigt ", italic("et. al")))) +
+  scale_fill_manual(values=c("#BA2BB2", "#F79CF2","#0000FF", "#6363F3", "#0BA8AF", "#9BF4F8")) +
+  #scale_color_manual(values=c("#BA2BB2", "#EB59E3", "#13BBC3", "#2EE6EE")) +
+  facet_wrap(vars(Celltype), scales = "free_x")
+dev.off()
+
+svg(paste0(results,"01_",project, "_AllDonors_Correlation_Control2_CaSTLe.svg"),
+    width = 10, height = 12)
+ggplot(
+  cor_louv %>% filter(Celltype  == "Rods"| Celltype  =="Cones" | Celltype  =="Müller Glia") %>%
+    filter(Correspondance == TRUE),
+  aes(x = Retina.type, y = Correlation, fill= Groups)) +
+  geom_violin(trim=FALSE) +
+  geom_boxplot(width = 0.1) +
+  coord_cartesian(ylim = c(0,1))+
+  xlab("Retina type") +
+  ylab("Correlation") +
+  theme_basic2() +
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.title.x=element_blank(),
+        text=element_text(size=20),
+        legend.position="bottom")+
+  # labs(title = "Correlation of schROHT photoreceptors and MG cells \n towards peripheral and foveal reference data",
+  #      subtitle = paste("Control 2"," - Annotation based on higher resolution"),
+  #      caption = expression(paste("Reference data taken from Voigt ", italic("et. al")))) +
+  scale_fill_manual(values=c("#BA2BB2", "#F79CF2","#0000FF", "#6363F3", "#0BA8AF", "#9BF4F8")) +
+  #scale_color_manual(values=c("#BA2BB2", "#EB59E3", "#13BBC3", "#2EE6EE")) +
+  facet_wrap(vars(Celltype), scales = "free_x", nrow = 3)
+
+dev.off()
+
+# Plot_data(data_type = "Control2", correlation_df = cor_louv)
+
+```
+
+```{r}
+library("rhdf5")
+
+# h5ad_file <- paste0(input,"20200713_CTRL_3_Cells_higherResolution_pp.h5ad")
+# 
+# obs <- h5read(h5ad_file, name = "obs")
+
+load('/data/bioinf/projects/data/2019_schROHT/2021_Foveal_Peripheral_R/RData/CaSTLe_Annot_output_Control_3_Organoid_cellnames.RData')
+
+sc_data <- read.csv("/data/bioinf/projects/data/2019_schROHT/2021_Foveal_Peripheral_R/csvs/Count_data_schROHT_Control3.csv", row.names = 1, header = T)
+sc_data_log<- log10(sc_data+1)
+```
+
+### Subsampling Scheetz data
+
+```{r}
+all_files <- c("Foveal", "Peripheral")
+for (i in 1:length(all_files)){
+  PreprocessRetinaData(data_name = all_files[i])
+}
+
+#intersect_genes <- Reduce(intersect,  L_genes)
+intersect_full <- intersect(colnames(sc_data), means_Subsampled_df$Genes)
+
+```
+
+
+### Rods and Cones
+#### Correlation
+
+```{r}
+Calculate_correlation(data_type = "Control3", intersect = intersect_full, sc_data = sc_data_log, pattern_data = "01_Roska_Retina_*")
+
+
+```
+
+### Annotate Louvain clusters according to Master GOI expression
+
+```{r}
+load(paste0(rdata, "01_Correlation_Control3.RData"))
+red_mat <- correlation_mat[-c(1:18), 1:18]
+# rownames(obs) <- obs$index
+cor_louvain <- cbind(red_mat, predictedClasses)
+colnames(cor_louvain) <- c(colnames(red_mat), "Louvain")
+
+cor_louv <- data.frame("Retina type" = as.factor(c(rep(colnames(cor_louvain)[-dim(cor_louvain)[2]], each = dim(cor_louvain)[1]))),
+                       "Correlation" = as.vector(red_mat),
+                       "Celltype"= as.factor(rep(cor_louvain[,dim(cor_louvain)[2]],dim(red_mat)[2])))
+
+cor_louv$Celltype <- revalue(cor_louv$Celltype, replace = c("MC" = "Muller-Glia",
+                                                            "cones" = "Cones",
+                             "rod" = "Rods"))
+cor_louv$Groups <- gsub(cor_louv$Retina.type, pattern = "_R-00646_0[1-4]", replacement = "")
+cor_louv$Groups <- gsub(cor_louv$Groups, pattern = "_", replacement = " ")
+cor_louv$Correspondance <- ifelse((gsub(cor_louv$Groups, pattern = " Foveal", replacement = "") == cor_louv$Celltype | 
+                                     gsub(cor_louv$Groups, pattern = " Peripheral", replacement = "") == cor_louv$Celltype) , TRUE,FALSE)
+
+cor_louv$Groups <- gsub(cor_louv$Groups, pattern = "Muller-Glia", replacement = "Müller Glia")
+cor_louv$Celltype <- gsub(cor_louv$Celltype, pattern = "Muller-Glia", replacement = "Müller Glia")
+cor_louv$Groups <- gsub(cor_louv$Groups, pattern = " Foveal", replacement = " fovea")
+cor_louv$Groups <- gsub(cor_louv$Groups, pattern = " Peripheral", replacement = " peripheral")
+cor_louv$Cellname <- rep(rownames(cor_louvain), 18)
+```
+```{r}
+# Heatmap of peripheral and foveal vectors
+pheatmap(correlation_mat[1:12,1:12], col = brewer.pal(9,"Reds"), cluster_rows=FALSE, cluster_cols=FALSE)
+```
+
+### Plot
+
+```{r}
+svg(paste0(results,"01_",project, "_Alt_Figure_Correlation_Control3_CaSTLE.svg"),
+    width = 10, height = 5)
+ggplot(
+  cor_louv %>% filter(Celltype  == "Rods"| Celltype  =="Cones" | Celltype  =="Müller Glia") %>%
+    filter(Correspondance == TRUE),
+  aes(x = Groups, y = Correlation, fill= Groups)) +
+  geom_violin(trim=FALSE) +
+  geom_boxplot(width = 0.1) +
+  coord_cartesian(ylim = c(0,1)) +
+  xlab("Retina type") +
+  ylab("Correlation") +
+  theme_basic2() +
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.title.x=element_blank(),
+        text=element_text(size=20),
+        legend.position="bottom") +
+  # labs(title = "Correlation of schROHT photoreceptors and MG cells \n towards peripheral and foveal reference data",
+  #      subtitle = paste("Control 2"," - Annotation based on higher resolution"),
+  #      caption = expression(paste("Reference data taken from Voigt ", italic("et. al")))) +
+  scale_fill_manual(values=c("#BA2BB2", "#F79CF2","#0000FF", "#6363F3", "#0BA8AF", "#9BF4F8")) +
+  #scale_color_manual(values=c("#BA2BB2", "#EB59E3", "#13BBC3", "#2EE6EE")) +
+  facet_wrap(vars(Celltype), scales = "free_x")
+dev.off()
+
+svg(paste0(results,"01_",project, "_AllDonors_Correlation_Control3_CaSTLe.svg"),
+    width = 10, height = 12)
+ggplot(
+  cor_louv %>% filter(Celltype  == "Rods"| Celltype  =="Cones" | Celltype  =="Müller Glia") %>%
+    filter(Correspondance == TRUE),
+  aes(x = Retina.type, y = Correlation, fill= Groups)) +
+  geom_violin(trim=FALSE) +
+  geom_boxplot(width = 0.1) +
+  coord_cartesian(ylim = c(0,1))+
+  xlab("Retina type") +
+  ylab("Correlation") +
+  theme_basic2() +
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.title.x=element_blank(),
+        text=element_text(size=20),
+        legend.position="bottom")+
+  # labs(title = "Correlation of schROHT photoreceptors and MG cells \n towards peripheral and foveal reference data",
+  #      subtitle = paste("Control 2"," - Annotation based on higher resolution"),
+  #      caption = expression(paste("Reference data taken from Voigt ", italic("et. al")))) +
+  scale_fill_manual(values=c("#BA2BB2", "#F79CF2","#0000FF", "#6363F3", "#0BA8AF", "#9BF4F8")) +
+  #scale_color_manual(values=c("#BA2BB2", "#EB59E3", "#13BBC3", "#2EE6EE")) +
+  facet_wrap(vars(Celltype), scales = "free_x", nrow = 3)
+
+dev.off()
+
+# Plot_data(data_type = "Control2", correlation_df = cor_louv)
+
+```

@@ -1,0 +1,174 @@
+---
+title: "Organoid Composition"
+author: "Lisa"
+date: "July 31, 2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library("tidyverse")
+library("rhdf5")
+library(reshape2)
+library(plyr)
+
+dir <- '~/Data/2020_NatCom_MK/Annotation/HigherResolution/'
+
+files_sc <- list.files(path = dir, pattern=".h5ad")
+# obs saved this information
+obs <- h5read(paste0(dir,files_sc[1]), name = "obs")
+
+obs$GOI <- as.factor(ifelse(obs$Celltype == 0, "AHG", 
+                            ifelse(obs$Celltype == 1, "Bipolar", 
+                                   ifelse(obs$Celltype == 2, "Cones", 
+                                          ifelse(obs$Celltype == 3, "Müller Glia", 
+                                                 ifelse(obs$Celltype == 4, "Premature\n Photoreceptor", 
+                                                        ifelse(obs$Celltype == 5, "Rods", "NA")))))))
+svg(paste0(dir, "01_Celltype distribution_Control2.svg"), width = 6, height = 6)
+p <- ggplot(obs, aes(GOI)) + geom_bar(aes(y = (..count..)/sum(..count..)*100)) +
+  # geom_histogram(stat="count") +
+  theme_bw(base_size = 15) +
+  theme(strip.background = element_blank(), 
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.text.x = element_text(size=14, angle=45, hjust = 1)) +
+  xlab("Celltype") +
+  ylab("Percentage")
+
+print(p)
+
+dev.off()
+# ggsave(filename = paste0(dir, "01_Celltype distribution_Control2.pdf"), plot = p, device = "pdf", width = 8, height = 6)
+
+
+obs <- h5read(paste0(dir,files_sc[2]), name = "obs")
+
+obs$GOI <- as.factor(ifelse(obs$Celltype == 0, "AHG", 
+                            ifelse(obs$Celltype == 1, "Bipolar", 
+                                   ifelse(obs$Celltype == 2, "Cones", 
+                                          ifelse(obs$Celltype == 3, "Müller Glia", 
+                                                 ifelse(obs$Celltype == 4, "Premature\n Photoreceptor", 
+                                                        ifelse(obs$Celltype == 5, "Rods", "NA")))))))
+svg(paste0(dir, "01_Celltype distribution_Control3.svg"), width = 6, height = 6)
+p <- ggplot(obs, aes(GOI)) + geom_bar(aes(y = (..count..)/sum(..count..)*100)) +
+  # geom_histogram(stat="count") +
+  theme_bw(base_size = 15) +
+  theme(strip.background = element_blank(), 
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.text.x = element_text(size=14, angle=45, hjust = 1)) +
+  xlab("Celltype") +
+  ylab("Percentage")
+print(p)
+
+dev.off()
+# ggsave(filename = paste0(dir, "01_Celltype distribution_Control3.pdf"), plot = p, device = "pdf", width = 8, height = 6)
+```
+
+```{r}
+dic_castle <- '/home/steinheu/Data/2021_HRO/RData/'
+files_castle <- list.files(path = dic_castle, pattern="*Organoid_cellnames.RData")
+
+obs <- h5read(paste0(dir,files_sc[1]), name = "obs")
+
+obs$GOI <- as.factor(ifelse(obs$Celltype == 0, "AHG", 
+                            ifelse(obs$Celltype == 1, "Bipolar", 
+                                   ifelse(obs$Celltype == 2, "Cones", 
+                                          ifelse(obs$Celltype == 3, "Müller Glia", 
+                                                 ifelse(obs$Celltype == 4, "Premature\n Photoreceptor", 
+                                                        ifelse(obs$Celltype == 5, "Rods", "NA")))))))
+
+load(paste0(dic_castle, files_castle[[1]]))
+
+obs$castle <- predictedClasses
+obs$castle <- revalue(obs$castle, replace = c("MC" = "Müller Glia",
+                                              "cones" = "Cones",
+                                              'rod' = 'Rods'))
+obs$castle <- as.factor(obs$castle)
+obs$castle <- factor(obs$castle, levels = c("AC_B" , "AC_Y", "Ast", "CdBC" ,"ChBC", "Müller Glia" , "Cones" , "HC_02" ,"RBC", "Rods","RPE" ))
+obs$GOI <- factor(obs$GOI, levels = c("AHG" ,"Bipolar" , "Müller Glia", "Cones"  ,"Premature\n Photoreceptor", "Rods" ))
+
+plt <- obs %>% select(c(GOI, castle)) %>%
+  filter(castle == "Rods" | castle == "Müller Glia" | castle == 'Cones') %>%
+  filter(GOI == "Rods" | GOI == "Müller Glia" | GOI == 'Cones'| GOI == 'Premature\n Photoreceptor') %>% 
+  dplyr::count(castle, GOI, sort = TRUE) %>%
+  ggplot( aes(y = n, axis1 = castle, axis2 = GOI)) +
+  geom_alluvium(aes(fill = castle), width = 1/12) +
+  geom_stratum(width = 1/12, fill = c("#09CECE",  "#FC00FF",'#0000FF', '#F6ACF2',"#09CECE", "#FC00FF", '#0000FF'), color = "grey", alpha = .75) +
+  geom_text(stat = "stratum", aes(label = after_stat(stratum))) +
+  scale_x_discrete(limits = c("CaSTLe \n Annotation", "Manual \n Annotation"), expand = c(.05, .05)) +
+  scale_y_continuous(sec.axis=sec_axis(trans=~ . * 1, name="")) +
+  scale_fill_manual(values = c("grey", "grey", "grey")) +
+  theme_bw(base_size = 15) +
+  theme(strip.background = element_blank(), 
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.ticks.y=element_blank()) +
+  ylab("Number of cells") +
+  guides(fill = FALSE) +
+  coord_flip() 
+ggsave(filename = paste0(dic_castle, "01_Celltype_Consistency_Control2_castle.svg"), plot = plt, device = "svg", width = 10, height = 4)
+
+# plt <- obs %>% 
+#   filter(castle == "Rods" | castle == "Müller Glia" | castle == 'Cones') %>%
+#   ggplot(aes(castle, fill = GOI)) +
+#   geom_bar( position = "fill") +
+#   scale_fill_manual(values= c('#C4C5C6', "#808285", "#FC00FF", '#0000FF', , "#09CECE")) +
+#   scale_y_continuous(labels = scales::percent_format()) +
+#   xlab("CaSTLe annotation") +
+#   ylab("Percent") +
+#   theme_bw(base_size = 15) +
+#   theme(strip.background = element_blank(), 
+#         panel.grid.major = element_blank(), 
+#         panel.grid.minor = element_blank()) +
+#   guides(fill=guide_legend(title="Manual\nAnnotation"))
+# 
+
+
+
+obs <- h5read(paste0(dir,files_sc[2]), name = "obs")
+
+obs$GOI <- as.factor(ifelse(obs$Celltype == 0, "AHG", 
+                            ifelse(obs$Celltype == 1, "Bipolar", 
+                                   ifelse(obs$Celltype == 2, "Cones", 
+                                          ifelse(obs$Celltype == 3, "Müller Glia", 
+                                                 ifelse(obs$Celltype == 4, "Premature\n Photoreceptor", 
+                                                        ifelse(obs$Celltype == 5, "Rods", "NA")))))))
+
+load(paste0(dic_castle, files_castle[2]))
+
+obs$castle <- predictedClasses
+obs$castle <- revalue(obs$castle, replace = c("MC" = "Müller Glia",
+                                              "cones" = "Cones",
+                                              'rod' = 'Rods'))
+
+obs$castle <- as.factor(obs$castle)
+obs$castle <- factor(obs$castle, levels = c("AC_B" , "AC_Y", "Ast", "CdBC" ,"ChBC", "Müller Glia" , "Cones" , "HC_02" ,"RBC", "Rods","RPE" ))
+obs$GOI <- factor(obs$GOI, levels = c("AHG" ,"Bipolar" , "Müller Glia", "Cones"  ,"Premature\n Photoreceptor", "Rods" ))
+
+plt <- obs %>% select(c(GOI, castle)) %>%
+  filter(castle == "Rods" | castle == "Müller Glia" | castle == 'Cones') %>%
+  filter(GOI == "Rods" | GOI == "Müller Glia" | GOI == 'Cones'| GOI == 'Premature\n Photoreceptor') %>% 
+  dplyr::count(castle, GOI, sort = TRUE) %>%
+  ggplot( aes(y = n, axis1 = castle, axis2 = GOI)) +
+  geom_alluvium(aes(fill = castle), width = 1/12) +
+  geom_stratum(width = 1/12, fill = c("#09CECE",  "#FC00FF",'#0000FF', '#F6ACF2',"#09CECE", "#FC00FF", '#0000FF'), color = "grey", alpha = .75) +
+  geom_text(stat = "stratum", aes(label = after_stat(stratum))) +
+  scale_x_discrete(limits = c("CaSTLe \n Annotation", "Manual \n Annotation"), expand = c(.05, .05)) +
+  scale_y_continuous(sec.axis=sec_axis(trans=~ . * 1, name="")) +
+  scale_fill_manual(values = c("grey", "grey", "grey")) +
+  theme_bw(base_size = 15) +
+  theme(strip.background = element_blank(), 
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.ticks.y=element_blank()) +
+  ylab("Number of cells") +
+  guides(fill = FALSE) +
+  coord_flip() 
+ggsave(filename = paste0(dic_castle, "01_Celltype_Consistency_Control3_castle.svg"), plot = plt, device = "svg", width = 10, height = 4)
+```
